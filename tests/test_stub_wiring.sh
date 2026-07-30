@@ -44,6 +44,25 @@ check() {
     fi
 }
 
+# One column of a trace file, header row dropped, looked up by name rather than by position: the
+# field list lives in nextflow.config, and a reordering there would otherwise make the -resume checks
+# below compare an empty column against another empty column and pass.
+trace_column() {
+    local trace="$1" want="$2"
+    awk -F'\t' -v want="$want" -v trace="$trace" '
+        NR == 1 {
+            for (i = 1; i <= NF; i++) if ($i == want) col = i
+            if (!col) {
+                printf "no %s column in %s -- check trace.fields in nextflow.config\n", want, trace \
+                    > "/dev/stderr"
+                exit 1
+            }
+            next
+        }
+        { print $col }
+    ' "$trace"
+}
+
 echo '==> stub run'
 nextflow -log "${SCRATCH}/first.log" run . \
     -stub-run \
@@ -55,7 +74,11 @@ nextflow -log "${SCRATCH}/first.log" run . \
     tail -40 "${SCRATCH}/first.out" >&2
     exit 1
 }
-tail -1 "${SCRATCH}/first.out"
+# The resumed run at the end of this file overwrites the published trace (trace.overwrite = true), so
+# take the first run's task list and statuses now, while they still describe the first run.
+trace_column "${OUT}/pipeline_info/trace.txt" name | sort > "${SCRATCH}/first_tasks"
+trace_column "${OUT}/pipeline_info/trace.txt" status > "${SCRATCH}/first_status"
+printf '    %s task(s) executed\n' "$(wc -l < "${SCRATCH}/first_tasks")"
 
 echo '==> the plan'
 check 'grids.csv exists' test -s "${OUT}/pipeline_info/grids.csv"
@@ -128,13 +151,32 @@ nextflow -log "${SCRATCH}/resume.log" run . \
     tail -40 "${SCRATCH}/resume.out" >&2
     exit 1
 }
-readonly SUMMARY="$(grep -o 'completed=[0-9]* failed=[0-9]* cached=[0-9]*' "${SCRATCH}/resume.out" | tail -1)"
-echo "    ${SUMMARY}"
-readonly RERUN="$(printf '%s\n' "$SUMMARY" | sed 's/.*completed=\([0-9]*\).*/\1/')"
-readonly CACHED="$(printf '%s\n' "$SUMMARY" | sed 's/.*cached=\([0-9]*\).*/\1/')"
-check 'the resume summary was found' test -n "$SUMMARY"
-check 'nothing re-executed' test "${RERUN:-999}" -eq 0
-check 'every task came from the cache' test "${CACHED:-0}" -gt 0
+# Asserted from the published trace, not from what the run printed. Nextflow's end-of-run summary line
+# comes from whichever log observer is active -- ANSI in a terminal, plain in CI, and a third format
+# when NXF_AGENT_MODE/AGENT/CLAUDECODE is set in the environment -- so grepping the console for
+# `cached=N` passed under an agent and quietly matched nothing in CI, where an empty match then failed
+# all three checks. trace.txt has one row per task with a status, is a documented interface, and is the
+# file qc/failed_grids.txt already sends the reader to.
+trace_column "${OUT}/pipeline_info/trace.txt" name > "${SCRATCH}/resume_names"
+trace_column "${OUT}/pipeline_info/trace.txt" status > "${SCRATCH}/resume_status"
+sort "${SCRATCH}/resume_names" > "${SCRATCH}/resume_tasks"
+readonly RESUMED="$(wc -l < "${SCRATCH}/resume_status")"
+readonly CACHED="$(grep -cx 'CACHED' "${SCRATCH}/resume_status" || true)"
+printf '    %s of %s task(s) came from the cache\n' "$CACHED" "$RESUMED"
+
+# Without this the checks below would also pass on a first run that cached nothing to begin with.
+check 'the first run executed its tasks rather than reusing an older cache' \
+    test "$(grep -cx 'CACHED' "${SCRATCH}/first_status" || true)" -eq 0
+check 'the resumed run traced at least one task' test "$RESUMED" -gt 0
+check 'the resumed run ran the same set of tasks' \
+    cmp -s "${SCRATCH}/first_tasks" "${SCRATCH}/resume_tasks"
+if ! cmp -s "${SCRATCH}/first_tasks" "${SCRATCH}/resume_tasks"; then
+    diff "${SCRATCH}/first_tasks" "${SCRATCH}/resume_tasks" | head -20 || true
+fi
+check 'every task came from the cache' test "$CACHED" -eq "$RESUMED"
+if [ "$CACHED" -ne "$RESUMED" ]; then
+    paste "${SCRATCH}/resume_names" "${SCRATCH}/resume_status" | grep -v 'CACHED' | head -20 || true
+fi
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

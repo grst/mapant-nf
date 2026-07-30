@@ -107,6 +107,12 @@ unpacked once per grid and scanned a hundred times.
 - **No `$projectDir` inside a process body**: on an executor without a shared filesystem that path
   does not exist. Stage the file as an input instead. The same rule rules out bind mounts and any
   host-absolute path in committed config.
+- **Never assert on Nextflow's console output.** The end-of-run summary is written by whichever log
+  observer is active: ANSI in a terminal, plain in CI, and a third `[SUCCESS] completed=… cached=…`
+  format when `NXF_AGENT_MODE`, `AGENT` or `CLAUDECODE` is set — which is why a test can be green in
+  an agent-driven shell and fail in CI with nothing else changed. Assert on published artifacts;
+  `pipeline_info/trace.txt` has a status per task, including `CACHED`. `tests/test_stub_wiring.sh`
+  checks `-resume` that way.
 - **The interactive shell here is zsh**, where `"$var:tag"` eats `:t`/`:c`/`:h` as history modifiers.
   Use `"${var}:tag"` — this has produced a mis-tagged image and a broken `git rev-parse` already.
 

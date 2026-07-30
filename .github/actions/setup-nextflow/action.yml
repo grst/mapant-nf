@@ -1,0 +1,39 @@
+name: Set up Nextflow
+description: Install a pinned Nextflow with a JDK and a warm plugin cache.
+
+inputs:
+  version:
+    description: >
+      Nextflow version to install. The default is the version this pipeline is developed against;
+      manifest.nextflowVersion in nextflow.config is the lower bound it claims to support, which is
+      deliberately looser.
+    required: false
+    default: '26.04.6'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+
+    # nf-schema is fetched at run time, so without this every job downloads it again -- and a
+    # transient outage in the plugin registry would fail a run that has nothing to do with plugins.
+    - uses: actions/cache@v4
+      with:
+        path: ~/.nextflow
+        key: nextflow-${{ inputs.version }}-${{ hashFiles('nextflow.config') }}
+        restore-keys: nextflow-${{ inputs.version }}-
+
+    - shell: bash
+      run: |
+        set -euo pipefail
+        # The launcher script self-installs whichever version NXF_VER names, so pinning it here and
+        # exporting it for later steps is enough; there is no separate download to keep in step.
+        echo "NXF_VER=${{ inputs.version }}" >> "$GITHUB_ENV"
+        echo 'NXF_ANSI_LOG=false' >> "$GITHUB_ENV"
+        export NXF_VER='${{ inputs.version }}'
+        curl -fsSL https://get.nextflow.io | bash
+        sudo install -m 0755 nextflow /usr/local/bin/nextflow
+        nextflow -version

@@ -40,4 +40,13 @@ process OSM_EXTRACT {
         printf '%s: %s\\n' "\$f" "\$(osmium fileinfo -e -g data.count.nodes "\$f" 2>/dev/null || echo '?') nodes" >&2
     done
     """
+
+    // The extract names have to come from the chunk config, not be invented: they are the grid ids
+    // that OSM_TO_SHAPES' output is joined on downstream.
+    stub:
+    """
+    mkdir -p extracts
+    sed -n 's/.*"output": *"\\([^"]*\\)".*/\\1/p' ${chunk_json} \\
+        | while read -r name; do : > "extracts/\${name}"; done
+    """
 }

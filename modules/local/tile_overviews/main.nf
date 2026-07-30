@@ -25,4 +25,20 @@ process TILE_OVERVIEWS {
         --out-dir tiles \\
         --min-zoom ${params.min_zoom}
     """
+
+    stub:
+    """
+    # Same halving the real reducer does, applied to the coordinates in the staged base-tile names,
+    # so a stub run produces a pyramid with the zoom levels the run claims to have built.
+    for f in base_*.png; do
+        coords="\${f#base_}"; coords="\${coords%.png}"
+        z="\${coords%%_*}"; rest="\${coords#*_}"
+        x="\${rest%%_*}"; y="\${rest#*_}"
+        while [ "\$z" -gt ${params.min_zoom} ]; do
+            z=\$((z - 1)); x=\$((x / 2)); y=\$((y / 2))
+            mkdir -p "tiles/\$z/\$x"
+            : > "tiles/\$z/\$x/\$y.png"
+        done
+    done
+    """
 }

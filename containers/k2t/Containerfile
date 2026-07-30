@@ -9,7 +9,11 @@
 # missing wheel here turns a 30-second image build into a from-source GDAL compile.
 FROM docker.io/library/python:3.13-slim
 
-ARG K2T_VERSION=
+# Pinned, and pinned here rather than left to resolve at build time, because CI decides whether this
+# image needs rebuilding from the hash of this directory: an unpinned dependency would mean the same
+# hash could produce different images, and that the newer version would never be picked up anyway
+# (nothing would trigger a rebuild). Bumping this line is what publishes a new image.
+ARG K2T_VERSION=0.1.3
 
 # procps: Nextflow shells out to `ps` for task metrics and fails the task without it.
 #
@@ -28,10 +32,18 @@ RUN apt-get -o APT::Sandbox::User=root update \
 
 # jsonschema is not a k2t dependency; it is here so bin/plan_grids.py can validate the tiles CSV
 # against assets/schema_tiles.json itself when the row count makes doing it in Nextflow too slow.
-# Same schema file either way, so there is only ever one definition of the contract.
+# Same schema file either way, so there is only ever one definition of the contract. The version
+# matches tests/requirements.txt, so the samplesheet contract is enforced by the same library in CI
+# and in a run.
+#
+# Only the direct dependencies are pinned. What k2t resolves geopandas/rasterio/pyproj to is not,
+# because pinning those means maintaining a lock file for a transitive graph this repository does not
+# own -- so two builds of the same ctx- hash can still differ in a transitive version.
+ARG JSONSCHEMA_VERSION=4.26.0
+
 RUN pip install --no-cache-dir \
       "karttapullautin2tiles${K2T_VERSION:+==${K2T_VERSION}}" \
-      jsonschema \
+      "jsonschema==${JSONSCHEMA_VERSION}" \
  && python -c "import karttapullautin2tiles, geopandas, shapely, pyproj, mercantile, rasterio, PIL, jsonschema; \
 print('k2t', karttapullautin2tiles.__version__)" \
  && k2t --help > /dev/null

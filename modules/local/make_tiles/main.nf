@@ -46,4 +46,23 @@ process MAKE_TILES {
         echo 'no imagery overlapped ${p.z}/${p.x}/${p.y}; nothing emitted' >&2
     fi
     """
+
+    // Writes the parent and its four children, so `-stub-run` checks the thing that is actually
+    // easy to get wrong here: that a nested, multi-depth `tiles/z/x/y.png` tree survives being
+    // collected from many tasks and published into one pyramid.
+    stub:
+    """
+    mkdir -p 'tiles/${p.z}/${p.x}'
+    : > 'tiles/${p.z}/${p.x}/${p.y}.png'
+    cp 'tiles/${p.z}/${p.x}/${p.y}.png' 'base_${p.z}_${p.x}_${p.y}.png'
+
+    if [ ${p.z} -lt ${params.max_zoom} ]; then
+        for dx in 0 1; do
+            for dy in 0 1; do
+                mkdir -p "tiles/\$((${p.z} + 1))/\$((${p.x} * 2 + dx))"
+                : > "tiles/\$((${p.z} + 1))/\$((${p.x} * 2 + dx))/\$((${p.y} * 2 + dy)).png"
+            done
+        done
+    fi
+    """
 }

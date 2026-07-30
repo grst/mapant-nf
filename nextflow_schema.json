@@ -147,7 +147,7 @@
             "properties": {
                 "download_jobs": {
                     "type": "integer",
-                    "default": 4,
+                    "default": 2,
                     "minimum": 1,
                     "description": "Parallel downloads per grid.",
                     "help_text": "Multiplied by the number of concurrent grids and by the number of nodes, this is how hard the pipeline hits the data provider. Open-data servers are usually not built for it; keep it modest and consider download_limit_rate."
@@ -197,7 +197,7 @@
             "properties": {
                 "base_zoom": {
                     "type": "integer",
-                    "default": 12,
+                    "default": 11,
                     "minimum": 0,
                     "maximum": 22,
                     "description": "Zoom level at which tiling is parallelised.",

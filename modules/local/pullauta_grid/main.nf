@@ -94,12 +94,25 @@ process PULLAUTA_GRID {
         --failures failures.${grid_id}.tsv
     """
 
+    // The stub names its outputs after the grid's actual core tiles rather than emitting one
+    // placeholder, because the join it feeds is keyed on those names: parent_tiles.csv maps
+    // <tile> -> web-mercator parent, and a stub that invented a name would make MAKE_TILES receive
+    // nothing while the run still reported success. Named properly, `-stub-run` exercises the whole
+    // fan-in -- including groupKey's per-parent counts -- with no data and no containers.
     stub:
+    def suffix = params.png_variant == 'plain' ? '' : '_depr'
     """
     mkdir -p out
-    touch out/stub_depr.png out/stub_depr.pgw
-    printf 'tile\\n' > failures.${grid_id}.tsv
-    printf 'tile\\n' > download_failures.${grid_id}.tsv
-    touch pullauta.${grid_id}.log
+    awk -F, 'NR > 1 && \$5 == "core" { sub(/\\.la[sz]\$/, "", \$1); print \$1 }' ${grid_csv} \\
+        | while read -r stem; do
+              : > "out/\${stem}${suffix}.png"
+              : > "out/\${stem}${suffix}.pgw"
+          done
+
+    # Headers only, and the same headers the real scripts write: collectFile keeps the first one it
+    # sees, so a stub emitting a different set would publish a QC file with the wrong columns.
+    printf 'tile\\trole\\tgrid_id\\tcrs\\tmin_x\\tmin_y\\tmax_x\\tmax_y\\tsize_bytes\\turl\\tsha256\\tpullauta_version\\tpullauta_git_sha\\tisa_variant\\texit_code\\treason\\tpanic_message\\tlog_tail\\n' > failures.${grid_id}.tsv
+    printf 'tile\\trole\\toutcome\\tdetail\\n' > download_failures.${grid_id}.tsv
+    printf 'stub run: nothing was downloaded or rendered\\n' > pullauta.${grid_id}.log
     """
 }

@@ -1,0 +1,210 @@
+name: containers
+
+# Build the pipeline's four images, and publish them to GHCR from main.
+#
+# The rule for "is a new version needed" is content-addressed rather than schedule- or
+# commit-based: each image is tagged `ctx-<hash>`, where the hash is the git tree hash of its
+# containers/<name>/ directory -- the exact set of files that goes into `docker build`. If that tag
+# is already in the registry, the build is skipped entirely. So a commit touching only the pipeline
+# rebuilds nothing, a commit touching one Containerfile rebuilds one image, and re-running this
+# workflow is free.
+#
+# What that hash cannot see is a floating dependency: `debian:stable-slim` moves, apt and pip resolve
+# to whatever is current. An image is therefore NOT rebuilt when its inputs change upstream, only
+# when this repository's description of them changes. That is the deliberate trade -- reproducible
+# tags over automatic freshness -- and `workflow_dispatch` with force is the way to pick up a base
+# image update or a security fix.
+on:
+  # No paths filter here: a push to main considers all four images and skips the ones already in the
+  # registry, which costs a registry lookup per image and cannot get the filter wrong.
+  push:
+    branches: [main]
+
+  # On a pull request, only when a container file actually changed -- including build.sh, which is
+  # where the tags and build args come from.
+  pull_request:
+    paths:
+      - 'containers/**'
+      - '.github/workflows/containers.yml'
+
+  workflow_dispatch:
+    inputs:
+      images:
+        description: 'Images to consider: "all" or a space-separated subset (karttapullautin gdal osmium k2t)'
+        required: false
+        default: 'all'
+      force:
+        description: 'Rebuild and re-push even when the content hash is already in the registry (use after a base image or CVE update)'
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: containers-${{ github.event.pull_request.number || github.ref }}
+  # Cancel superseded pull-request builds, but never interrupt a publish half-way through its tags.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: work out what to build
+        id: plan
+        # Through the environment rather than interpolated into the script: a workflow_dispatch input
+        # is free text, and free text substituted into a shell command is a shell injection.
+        env:
+          SELECTED: ${{ github.event.inputs.images || 'all' }}
+        run: |
+          set -euo pipefail
+
+          # Names, tags and build args come from containers/build.sh --manifest, so a local build and
+          # this workflow cannot be given different arguments for the same image.
+          manifest="$(containers/build.sh --manifest)"
+
+          entries=''
+          while IFS=$'\t' read -r name tag build_args; do
+              case "$SELECTED" in
+                  all) ;;
+                  *" ${name} "* | "${name} "* | *" ${name}" | "${name}")
+                      ;;
+                  *)
+                      echo "skipping ${name}: not selected"
+                      continue
+                      ;;
+              esac
+
+              # The git tree hash of the build context: it changes if and only if a file that goes
+              # into the image changes, and it is stable across branches, clones and re-runs. Twelve
+              # characters is the same abbreviation git itself uses at this repository size.
+              ctx="$(git rev-parse "HEAD:containers/${name}" | cut -c1-12)"
+              echo "${name}: tag=${tag} ctx=${ctx} build_args=${build_args:-none}"
+
+              entries="${entries}$(printf '{"name":"%s","tag":"%s","build_args":"%s","ctx":"%s"}' \
+                  "$name" "$tag" "$build_args" "$ctx")"$'\n'
+          done < <(printf '%s' "$manifest" | jq -r '.[] | [.name, .tag, .build_args] | @tsv')
+
+          matrix="$(printf '%s' "$entries" | jq -sc '{include: .}')"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "any=$(printf '%s' "$entries" | jq -s 'length > 0')" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.name }}
+    needs: plan
+    if: needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    # karttapullautin compiles the same Rust project three times, once per instruction-set level.
+    # From a cold layer cache that is the better part of an hour on a 4-vCPU runner.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    env:
+      # Publish only from main. A workflow_dispatch on a branch still builds and smoke-tests, which
+      # makes it a usable way to try a Containerfile change without publishing it.
+      DEPLOY: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      FORCE: ${{ github.event.inputs.force == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: resolve the image reference
+        run: |
+          set -euo pipefail
+          # GHCR rejects uppercase; a fork under an account with capitals would otherwise fail here
+          # with an error about the tag rather than about the name.
+          image="ghcr.io/${{ github.repository }}/${{ matrix.name }}"
+          echo "IMAGE=${image,,}" >> "$GITHUB_ENV"
+          echo "CTX_TAG=ctx-${{ matrix.ctx }}" >> "$GITHUB_ENV"
+
+      - name: log in to ghcr.io
+        if: env.DEPLOY == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The whole point of the content hash: if this exact build context has already been published,
+      # there is nothing to do and no new version to create. Pull requests always build, because
+      # checking that a Containerfile change still produces a working image is what they are for.
+      - name: is this content already published?
+        id: published
+        run: |
+          set -euo pipefail
+          if [ "${DEPLOY}" != true ]; then
+              echo 'pull request: building without publishing'
+          elif [ "${FORCE}" = true ]; then
+              echo 'force requested: rebuilding even though the tag may exist'
+          elif docker buildx imagetools inspect "${IMAGE}:${CTX_TAG}" > /dev/null 2>&1; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              echo "${IMAGE}:${CTX_TAG} is already published; nothing changed"
+          else
+              echo "${IMAGE}:${CTX_TAG} is not in the registry yet"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+        if: steps.published.outputs.skip != 'true'
+
+      # load rather than push, so the image is in the local daemon for the smoke test below and only
+      # reaches the registry once it has passed. linux/amd64 only: the karttapullautin image is three
+      # x86-64 microarchitecture builds and has no meaning on another architecture.
+      - name: build
+        if: steps.published.outputs.skip != 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: containers/${{ matrix.name }}
+          file: containers/${{ matrix.name }}/Containerfile
+          build-args: ${{ matrix.build_args }}
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: |
+            ${{ env.IMAGE }}:${{ env.CTX_TAG }}
+            ${{ env.IMAGE }}:${{ matrix.tag }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+
+      # The same script that checks a local build, so an image cannot pass here and fail on a
+      # workstation. For karttapullautin this is also where the AVX-512 build is verified, by
+      # disassembly -- the requirement cannot be checked by running it unless the runner happens to
+      # have AVX-512.
+      - name: smoke test
+        if: steps.published.outputs.skip != 'true'
+        run: containers/smoke.sh ${{ matrix.name }} "${IMAGE}:${CTX_TAG}"
+
+      - name: publish
+        if: steps.published.outputs.skip != 'true' && env.DEPLOY == 'true'
+        run: |
+          set -euo pipefail
+          # ctx-<hash> is the immutable one; the others move. Deduplicated because `latest` is already
+          # the version tag for three of the four images.
+          for tag in $(printf '%s\n%s\n%s\n' "${CTX_TAG}" '${{ matrix.tag }}' latest | sort -u); do
+              docker push "${IMAGE}:${tag}"
+          done
+
+      - name: summary
+        if: always()
+        run: |
+          set -uo pipefail
+          # No `set -e`: this step runs even when an earlier one failed, and a summary line is worth
+          # more than a second failure. IMAGE/CTX_TAG default in case the resolve step is what broke.
+          IMAGE="${IMAGE:-ghcr.io/${{ github.repository }}/${{ matrix.name }}}"
+          CTX_TAG="${CTX_TAG:-ctx-${{ matrix.ctx }}}"
+          if [ "${{ steps.published.outputs.skip }}" = true ]; then
+              verdict="unchanged, already published as \`${CTX_TAG}\`"
+          elif [ "${DEPLOY}" = true ]; then
+              verdict="built and published as \`${CTX_TAG}\`, \`${{ matrix.tag }}\`, \`latest\`"
+          else
+              verdict="built and smoke-tested, not published (pull request)"
+          fi
+          echo "- **${{ matrix.name }}**: ${verdict} — \`${IMAGE}\`" >> "$GITHUB_STEP_SUMMARY"

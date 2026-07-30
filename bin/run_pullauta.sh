@@ -321,8 +321,11 @@ done
 # depression markings; carrying both would double the intermediate storage of a full run
 # (~90 GB -> ~175 GB for Bavaria) for output nobody consumes.
 case "$variant" in
-    depr) find out -maxdepth 1 -name '*.png' -o -name '*.pgw' | grep -v '_depr\.' | xargs -r rm -f ;;
-    plain) find out -maxdepth 1 -name '*_depr.png' -o -name '*_depr.pgw' | xargs -r rm -f ;;
+    # -delete rather than a pipe into xargs, and the alternation parenthesised: `-name a -o -name b`
+    # binds looser than the implicit -and, so without the parentheses the -type f applies to only
+    # the first branch.
+    depr) find out -maxdepth 1 -type f \( -name '*.png' -o -name '*.pgw' \) ! -name '*_depr.*' -delete ;;
+    plain) find out -maxdepth 1 -type f \( -name '*_depr.png' -o -name '*_depr.pgw' \) -delete ;;
     both) ;;
     *) echo "run_pullauta.sh: unknown --variant: ${variant}" >&2; exit 2 ;;
 esac

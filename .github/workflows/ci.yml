@@ -1,0 +1,115 @@
+name: tests
+
+# On every pull request and on every push to main. The four jobs are split by what they need rather
+# than by what they cover, so a failure names its own cause: lint needs nothing, unit needs Python,
+# scripts need only bash, wiring needs both Nextflow and Python.
+#
+# What CI deliberately does not run: anything that renders a pixel. That needs the ~52 GB of LiDAR in
+# testdata/ (tests/test_grid_independence.sh, tests/test_failure_injection.sh, -profile test_local) or
+# a multi-gigabyte download from an open-data server (-profile test_immenstadt). Those are run by
+# hand before a release; README.md says which and why.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/setup-nextflow
+
+      # Nextflow 26.04 defaults to the strict v2 parser, which rejects things earlier versions
+      # accepted (top-level statements, implicit `it`, `for`/`while` in a workflow body). Linting is
+      # what keeps a module from being written in the old dialect and only failing when it first runs.
+      - name: nextflow lint
+        run: nextflow lint .
+
+      # Configuration is where two of this pipeline's real bugs have been, and neither showed up as a
+      # failing run. See the header of the test.
+      - name: profiles resolve and derived settings track their params
+        run: tests/test_config_profiles.sh
+
+      # The scripts in bin/ do the work that cannot be expressed in a process body -- retrying
+      # downloads, verifying checksums, recovering from a renderer that panics -- so they are where an
+      # unquoted expansion does real damage. .shellcheckrc lists the four style checks this repository
+      # declines and why; everything else is a hard failure.
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          command -v shellcheck > /dev/null || sudo apt-get install -y --no-install-recommends shellcheck
+          shellcheck --version
+          # The two without a .sh suffix are shell too: a test double for the renderer, and the ISA
+          # dispatch wrapper that decides which binary every render in production runs.
+          shellcheck bin/*.sh \
+                     tests/*.sh \
+                     tests/stub_pullauta \
+                     containers/*.sh \
+                     containers/karttapullautin/pullauta \
+                     scripts/*.sh
+
+  unit:
+    name: unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.13 rather than the newest: it is what containers/k2t/Containerfile pins, and the point
+          # of these tests is the geometry the container will actually run.
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      - run: pip install -r tests/requirements.txt
+
+      # All of the pipeline's geometry -- halo resolution, the grid lattice, lon/lat envelopes, the
+      # tile-to-parent map, the samplesheet contract -- lives in bin/plan_grids.py precisely so it can
+      # be tested here, without a container or a byte of LiDAR.
+      - run: pytest tests/ -v
+
+  scripts:
+    name: script tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # "A tile that makes karttapullautin panic must not stop the run, and must be reported" is the
+      # requirement easiest to believe you have implemented without ever exercising it: the offending
+      # tile is by definition one you do not have. tests/stub_pullauta reproduces the failure
+      # behaviour, so the recovery ladder is tested with no renderer and no data.
+      - run: tests/test_run_pullauta_recovery.sh
+
+  wiring:
+    name: stub run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tests/requirements.txt
+
+      # PLAN_GRIDS, RENDER_INI and TILE_VIEWER run for real in a stub run -- they are pure Python and
+      # the interesting property is that the plan they produce lines up with the names everything
+      # downstream joins on. Their container directives are simply ignored, because no container
+      # engine is enabled.
+      - run: pip install -r tests/requirements.txt
+
+      - uses: ./.github/actions/setup-nextflow
+
+      - run: tests/test_stub_wiring.sh

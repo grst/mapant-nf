@@ -15,6 +15,7 @@ results*/
 # Scratch directories the shell tests build and tear down
 .grid_independence/
 .failure_injection/
+.stub_wiring/
 
 # Test data: ~52 GB of LiDAR, OSM extracts and a prototype karttapullautin run. Not distributable,
 # and `git add -A` without this line commits all of it. The small CSVs derived from it live in

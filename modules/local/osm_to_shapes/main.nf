@@ -54,4 +54,10 @@ process OSM_TO_SHAPES {
 
     rm -rf output_shapes
     """
+
+    stub:
+    """
+    mkdir -p shapes
+    : > shapes/map.shp.zip
+    """
 }

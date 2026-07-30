@@ -73,3 +73,24 @@ From the testdata directory, the following is available:
 Verify your pipeline on a small test region (around Immenstadt im Allgäu) that
 is small enough to be processed on this laptop, but large enough to test the
 grids. 
+
+---
+
+Simplifications
+---------------
+ * prefer a python script over the massive fetch_laz or run_pullauta shell scripts
+ * you can always assume that a tile size is larger than the 127m halo ring. No need to check for that, just use one ring. 
+ * You can also drop any comments that grid size does not affect quality, that's obvious. 
+ * the lat/lon columns in the samplesheet are unnecessary, just get them from the crs internall when needed. 
+ * make comments less verbose, just state non-obvious stuff
+ * remove the parameters region_tile_regex and min_laz_bytes and scratch and related code
+ * always perform input validation, remove corresponding parameter
+ * always perform input validation in nextflow. No redundant logic. Remove validate_tiles_in_python and associated code. 
+ * container images are no parameters, they can be set in config files. Remove them as parameters. 
+ * python has a configparser that can read ini files in the standard lib. Use this over manually parsing ini with regexes. 
+ 
+---
+
+Compare png to lossless webp. How much storage could be saved? 
+
+---

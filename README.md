@@ -1,5 +1,8 @@
 # mapant
 
+[![tests](https://github.com/grst/mapant-nf/actions/workflows/ci.yml/badge.svg)](https://github.com/grst/mapant-nf/actions/workflows/ci.yml)
+[![containers](https://github.com/grst/mapant-nf/actions/workflows/containers.yml/badge.svg)](https://github.com/grst/mapant-nf/actions/workflows/containers.yml)
+
 A Nextflow pipeline that turns a list of LiDAR tiles into a web-mercator PNG tile pyramid —
 an automatically generated orienteering map, in the style of
 [mapant.fi](https://mapant.fi). Built to produce a map of all of Bavaria from ~15 TB of open
@@ -28,7 +31,6 @@ pyramid, and automates the manual process documented in
 
 ```bash
 bash scripts/setup-container-runtime.sh   # only in this devcontainer; idempotent
-containers/build.sh                       # builds the four images locally
 
 # ~10 minutes, no network traffic, renders from testdata/
 nextflow run . -profile podman,test_local
@@ -54,6 +56,18 @@ nextflow run . -profile podman \
 
 `nextflow run . --help` lists every parameter with its documentation
 ([`nextflow_schema.json`](nextflow_schema.json)).
+
+The four container images are pulled from
+[GHCR](https://github.com/grst/mapant-nf/pkgs/container/mapant-nf%2Fkarttapullautin), where CI
+publishes them from `main`; nothing needs building to run the pipeline. To use images built on this
+machine instead — which is what you want while editing a `Containerfile` — build them and add one
+profile:
+
+```bash
+containers/build.sh                                   # all four, tagged mapant/<name>:latest
+containers/smoke.sh k2t                               # check one of them
+nextflow run . -profile podman,local_images,test_local
+```
 
 ## The input contract
 
@@ -238,6 +252,10 @@ Lake. Naming the target makes cargo treat it as a cross-compile, which is what l
 laptop build the AVX-512 binary. On this machine, `PULLAUTA_ISA=v4 pullauta` exits 132 (SIGILL),
 which is the proof that the v4 binary really is different.
 
+Since the requirement cannot be *executed* on a machine without AVX-512, `containers/smoke.sh`
+verifies it by disassembly instead, which works anywhere: the v4 build uses 1453 `zmm` operands,
+the v3 and baseline builds none. CI runs that check on every build of the image.
+
 ## Tuning
 
 | | laptop (16 CPU, ~7 GB free, 168 GB) | `c8id.32xlarge` (128 vCPU, 256 GiB, 3.8 TB NVMe) |
@@ -326,19 +344,67 @@ Granite Rapids has AVX-512, so the v4 build is selected there — check for
 
 ## Tests
 
-| Command | What it establishes | Time |
-| --- | --- | --- |
-| `pytest tests/` | planning geometry and the CSV schema — 34 tests | 1 s |
-| `bash tests/test_run_pullauta_recovery.sh` | crash recovery against a stub renderer — 30 assertions | 10 s |
-| `nextflow run . -profile podman,test_local -stub-run` | channel wiring and publishing, no rendering | 20 s |
-| `nextflow run . -profile podman,test_local` | end to end, no network: 8 tiles, 2 grids, **no seam at the grid boundary**, `work/` left at 20 MB | ~15 min |
-| `bash tests/test_grid_independence.sh` | a tile renders byte-identically alone and batched | ~10 min |
-| `bash tests/test_failure_injection.sh` | a corrupt laz leaves one hole, is reported twice, and does not stop the run | ~8 min |
-| `nextflow run . -profile podman,test_immenstadt` | end to end with real downloads; also the timing calibration | ~15 min |
-| `nextflow lint .` | strict-parser clean | 5 s |
+The first five rows run in CI on every pull request and every push to `main`
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The rest need the ~52 GB of LiDAR in
+`testdata/`, or a multi-gigabyte download, so they are run by hand before a release.
+
+| Command | What it establishes | Time | CI |
+| --- | --- | --- | --- |
+| `pytest tests/` | planning geometry and the CSV schema — 34 tests | 1 s | ✅ |
+| `bash tests/test_run_pullauta_recovery.sh` | crash recovery against a stub renderer — 30 assertions | 10 s | ✅ |
+| `bash tests/test_stub_wiring.sh` | the whole DAG with fabricated outputs: joins, fan-in, nested publishing, `-resume` — 21 assertions | 1 min | ✅ |
+| `bash tests/test_config_profiles.sh` | every profile resolves and derived settings track their params | 30 s | ✅ |
+| `nextflow lint .` + `shellcheck` | strict-parser clean; scripts clean | 10 s | ✅ |
+| `nextflow run . -profile podman,test_local` | end to end, no network: 8 tiles, 2 grids, **no seam at the grid boundary**, `work/` left at 20 MB | ~15 min | |
+| `bash tests/test_grid_independence.sh` | a tile renders byte-identically alone and batched | ~10 min | |
+| `bash tests/test_failure_injection.sh` | a corrupt laz leaves one hole, is reported twice, and does not stop the run | ~8 min | |
+| `nextflow run . -profile podman,test_immenstadt` | end to end with real downloads; also the timing calibration | ~15 min | |
+| `containers/smoke.sh <name>` | an image has `bash`, `ps` and the tool it exists for; for karttapullautin, that the v4 build really is AVX-512 | 30 s | ✅ (on build) |
 
 All of the above pass. The Python tests need a few host packages:
-`uv pip install pytest shapely pyproj mercantile jsonschema`.
+`python -m venv .venv && .venv/bin/pip install -r tests/requirements.txt`.
+
+A stub run is the cheapest test that can catch a *structural* bug, and worth understanding for that
+reason. Every process that needs real inputs has a `stub:` block that fabricates correctly **named**
+outputs — `PULLAUTA_GRID`'s reads its grid's CSV and emits one PNG per core tile — while
+`PLAN_GRIDS`, `RENDER_INI` and `TILE_VIEWER` have none and run for real. So the plan is genuine, the
+names everything joins on are genuine, and the assertion that every planned parent tile came out of
+the pyramid is meaningful. It is also blind to every pixel: a stub run stays green on a pipeline that
+renders garbage.
+
+## Containers
+
+Four images, one per process family, built and published by
+[`.github/workflows/containers.yml`](.github/workflows/containers.yml) — or locally, identically, by
+`containers/build.sh`. Both take their names, tags and build args from `build.sh --manifest`, so they
+cannot drift apart.
+
+**A new version is created only when an image's build inputs change.** Each image is tagged
+`ctx-<hash>`, where the hash is the git tree hash of its `containers/<name>/` directory — precisely
+the files that go into `docker build`. If that tag is already in the registry the build is skipped,
+so a commit touching only the pipeline rebuilds nothing and a re-run costs four registry lookups.
+Pull requests that touch `containers/**` build and smoke-test without publishing; `main` publishes
+`ctx-<hash>`, the version tag and `latest`.
+
+What a content hash cannot see is a floating dependency: `debian:stable-slim` moves, apt and pip
+resolve to whatever is current that day. An image is therefore **not** rebuilt when its inputs change
+upstream, only when this repository's description of them does — reproducible tags bought at the cost
+of automatic freshness. Run the workflow manually with `force` to pick up a base-image or CVE update:
+
+```
+Actions ▸ containers ▸ Run workflow ▸ images: all ▸ force: true
+```
+
+One manual step, once: a package published by `GITHUB_TOKEN` starts out **private**, so
+`podman pull` from a machine without credentials fails with `unauthorized` until each of the four is
+set to public under *Packages ▸ Package settings ▸ Change visibility*. Nothing in a workflow can do
+this — it needs a scope `GITHUB_TOKEN` does not have.
+
+For a run whose toolchain has to be reconstructible later, pin the `ctx-` tags rather than `latest`:
+
+```bash
+nextflow run . --container_k2t ghcr.io/grst/mapant-nf/k2t:ctx-6033ed3b5add
+```
 
 ## Known limitations
 

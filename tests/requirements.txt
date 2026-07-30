@@ -1,0 +1,14 @@
+# Python dependencies for the tests, and for running bin/*.py outside a container.
+#
+# These are pinned so that CI fails when someone changes this file, not on a random Tuesday when a
+# dependency releases. They are deliberately NOT the same thing as the k2t image's dependency set:
+# that image installs karttapullautin2tiles and lets pip resolve the rest, because what it has to
+# match is k2t's own requirements. Nothing here needs to agree with it -- the only overlap is the
+# handful of libraries bin/plan_grids.py and bin/make_viewer.py import.
+#
+#   python -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
+jsonschema==4.26.0
+mercantile==1.2.1
+pyproj==3.7.2
+pytest==9.1.1
+shapely==2.1.2

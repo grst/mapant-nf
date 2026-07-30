@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# A stand-in for karttapullautin, for testing bin/run_pullauta.sh's crash-recovery ladder.
+#
+# The real renderer cannot be made to panic on demand, and the tile that triggers the upstream bug
+# this pipeline has to survive is by definition not something we have a copy of. So the behaviour that
+# matters is reproduced here exactly as karttapullautin v2.13.0 exhibits it:
+#
+#   * the work queue is every *.laz in `lazfolder` whose <stem>.png does NOT already exist in
+#     `batchoutfolder` (Plan::new_from_input_files), which is what makes it resume by itself and what
+#     makes an empty placeholder PNG an effective way to skip a file;
+#   * `processes` workers are used, capped at the number of files left to do;
+#   * each finished tile gets four files: <t>.png, <t>.pgw, <t>_depr.png, <t>_depr.pgw, in that order;
+#   * a panic aborts the whole process, not just the offending tile, and other in-flight tiles are
+#     abandoned mid-write -- which is why the recovery code checks for a trailing IEND chunk.
+#
+# Behaviour is driven by the environment:
+#   STUB_CRASH_TILES  space-separated stems that panic when rendered
+#   STUB_TRUNCATE     stem to leave half-written before crashing, simulating the abandoned in-flight
+#                     tile (its .png gets no IEND chunk)
+#   STUB_FAIL_EARLY   if set, fail before touching any tile, as a bad ini or missing zip would
+set -euo pipefail
+
+readonly INI=pullauta.ini
+[ -f "$INI" ] || { echo 'stub_pullauta: no pullauta.ini in the working directory' >&2; exit 2; }
+
+ini_get() { sed -n -E "s/^[ \t]*$1[ \t]*=[ \t]*(.*)$/\1/p" "$INI" | head -1; }
+
+lazfolder="$(ini_get lazfolder)"; lazfolder="${lazfolder:-./in}"
+outfolder="$(ini_get batchoutfolder)"; outfolder="${outfolder:-./out}"
+processes="$(ini_get processes)"; processes="${processes:-1}"
+
+echo 'pullauta: ISA variant stub (/opt/karttapullautin/pullauta-stub)' >&2
+echo 'Karttapullautin v2.13.0-stub'
+echo 'There is no warranty. Use it at your own risk!'
+
+if [ -n "${STUB_FAIL_EARLY:-}" ]; then
+    echo 'stub_pullauta: could not read shapefile archive' >&2
+    exit 101
+fi
+
+mkdir -p "$outfolder"
+
+# A 1x1 PNG, complete with its IEND chunk. Base64 so the bytes survive being stored in a shell script.
+readonly PNG_B64='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg=='
+
+write_png() { base64 -d <<< "$PNG_B64" > "$1"; }
+write_pgw() { printf '0.42333333333333334\n0\n0\n-0.42333333333333334\n608000.2116666667\n5286999.787333333\n' > "$1"; }
+
+# The queue: files whose output does not already exist.
+todo=()
+for laz in "$lazfolder"/*.laz; do
+    [ -e "$laz" ] || continue
+    stem="$(basename "$laz")"
+    stem="${stem%.laz}"
+    [ -e "${outfolder}/${stem}.png" ] || todo+=("$stem")
+done
+echo "Found $(ls "$lazfolder"/*.laz 2> /dev/null | wc -l) input files, ${#todo[@]} of which need to be processed"
+
+crash_list=" ${STUB_CRASH_TILES:-} "
+for stem in "${todo[@]}"; do
+    echo "${lazfolder}/${stem}.laz -> ${outfolder}/${stem}.png"
+
+    if [[ $crash_list == *" $stem "* ]]; then
+        # Abandon a sibling mid-write first, the way a real panic does to in-flight workers.
+        if [ -n "${STUB_TRUNCATE:-}" ] && [ "${processes}" -gt 1 ]; then
+            printf '\211PNG\r\n\032\n' > "${outfolder}/${STUB_TRUNCATE}.png"
+        fi
+        echo "thread '<unnamed>' panicked at src/io/xyz.rs:118:23:" >&2
+        echo 'called `Result::unwrap()` on an `Err` value: could not read LAZ points' >&2
+        echo 'note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace' >&2
+        exit 101
+    fi
+
+    write_png "${outfolder}/${stem}.png"
+    write_pgw "${outfolder}/${stem}.pgw"
+    write_png "${outfolder}/${stem}_depr.png"
+    write_pgw "${outfolder}/${stem}_depr.pgw"
+done
+
+echo 'All done!'

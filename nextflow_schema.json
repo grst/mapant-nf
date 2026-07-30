@@ -1,0 +1,280 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/grst/mapant/main/nextflow_schema.json",
+    "title": "mapant pipeline parameters",
+    "description": "Generate a web-mercator PNG tile pyramid from a list of LiDAR tiles using karttapullautin.",
+    "type": "object",
+    "$defs": {
+        "input_output": {
+            "title": "Input and output",
+            "type": "object",
+            "required": ["tiles_csv", "outdir"],
+            "properties": {
+                "tiles_csv": {
+                    "type": "string",
+                    "format": "file-path",
+                    "exists": true,
+                    "mimetype": "text/csv",
+                    "schema": "assets/schema_tiles.json",
+                    "description": "CSV listing the LiDAR tiles to process.",
+                    "help_text": "One row per .laz/.las file with its URL, size, sha256, CRS and projected bounding box. This file is the pipeline's input contract; see assets/schema_tiles.json for the full column list. Any region or country can be processed by producing a CSV that satisfies it."
+                },
+                "osm_pbf": {
+                    "type": "string",
+                    "format": "file-path",
+                    "exists": true,
+                    "description": "OpenStreetMap extract used to draw roads, buildings and water.",
+                    "help_text": "Optional. Without it karttapullautin renders contours, cliffs and vegetation only. A single country-sized .pbf is fine: the pipeline cuts per-grid extracts from it, which it has to, because karttapullautin re-reads the unpacked shapefile set once per rendered tile."
+                },
+                "pullauta_ini": {
+                    "type": "string",
+                    "format": "file-path",
+                    "exists": true,
+                    "description": "karttapullautin parameter file controlling the cartography.",
+                    "help_text": "Everything about the map's appearance -- contour interval, the vegetation and cliff models, form lines. The pipeline overrides only the keys it must own (batch mode, thread count, input/output folders) and publishes the result as the run's provenance record."
+                },
+                "vectorconf": {
+                    "type": "string",
+                    "format": "file-path",
+                    "exists": true,
+                    "description": "karttapullautin shape mapping file (osm.txt) translating OSM tags to map symbols."
+                },
+                "laz_local_dir": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "exists": true,
+                    "description": "Directory of already-downloaded LiDAR files to use instead of fetching.",
+                    "help_text": "Files found here are used in place of a download but are still size- and sha256-checked, so the verification path behaves identically. Staged as an ordinary Nextflow input, so it works on any executor. Intended for tests and for re-running against a local mirror."
+                },
+                "outdir": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "default": "results",
+                    "description": "Where the tile pyramid, QC files and provenance are written."
+                },
+                "publish_mode": {
+                    "type": "string",
+                    "default": "copy",
+                    "enum": ["copy", "link", "symlink", "rellink"],
+                    "description": "How published files leave the work directory.",
+                    "help_text": "'copy' works everywhere including object stores. 'link' (hardlink) is far cheaper for the millions of small files a large run produces, but needs outdir and workDir on one filesystem. Never use 'move': it breaks -resume."
+                },
+                "map_title": {
+                    "type": "string",
+                    "default": "mapant",
+                    "description": "Title shown in the generated HTML viewer."
+                }
+            }
+        },
+        "region": {
+            "title": "Region filter",
+            "description": "Restrict the run to part of the tiles CSV. The halo is always drawn from the whole CSV, so a filtered region renders identically to a full run.",
+            "type": "object",
+            "properties": {
+                "region_bbox": {
+                    "type": "string",
+                    "pattern": "^-?[0-9.]+,-?[0-9.]+,-?[0-9.]+,-?[0-9.]+$",
+                    "description": "Only render tiles intersecting this box: 'minx,miny,maxx,maxy'."
+                },
+                "region_bbox_crs": {
+                    "type": "string",
+                    "default": "lonlat",
+                    "description": "CRS of region_bbox: 'lonlat', or an EPSG string meaning the tiles' own CRS."
+                },
+                "region_tile_regex": {
+                    "type": "string",
+                    "description": "Only render tiles whose filename matches this regular expression."
+                },
+                "min_laz_bytes": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Skip rendering tiles smaller than this many bytes (0 disables).",
+                    "help_text": "Near-empty LiDAR files are the likeliest trigger of the karttapullautin crash this pipeline is built to survive. Excluded tiles are still used as neighbours, so their absence does not degrade the tiles around them."
+                }
+            }
+        },
+        "grids": {
+            "title": "Grids and rendering",
+            "type": "object",
+            "properties": {
+                "grid_size": {
+                    "type": "integer",
+                    "default": 10,
+                    "minimum": 1,
+                    "description": "Tiles per grid edge. A download/disk trade-off, not a quality setting.",
+                    "help_text": "karttapullautin renders each tile from its neighbours within pullauta_halo_m and crops back to the tile, so a tile's output is identical whatever grid it was batched into. Larger grids re-fetch proportionally fewer halo tiles (2.8x at 3, 1.44x at 10, 1.27x at 16) but need proportionally more disk per concurrent task -- roughly (grid_size+2)^2 tiles plus karttapullautin's temporaries."
+                },
+                "pullauta_halo_m": {
+                    "type": "number",
+                    "default": 127,
+                    "minimum": 0,
+                    "description": "Distance from which neighbouring points are needed for an artifact-free render.",
+                    "help_text": "127 m is hard-coded in karttapullautin v2 (src/process.rs). Do not lower it: doing so drops neighbours the renderer will still look for, producing seams. Raising it only wastes downloads."
+                },
+                "pullauta_processes": {
+                    "type": "integer",
+                    "default": 8,
+                    "minimum": 1,
+                    "description": "karttapullautin worker threads per grid; also the task's cpus.",
+                    "help_text": "Each worker needs roughly 2 GB of RAM and about 3 GB of scratch for its own temporary files."
+                },
+                "max_pullauta_attempts": {
+                    "type": "integer",
+                    "default": 6,
+                    "minimum": 1,
+                    "description": "How many times to re-run a grid while isolating tiles that crash the renderer.",
+                    "help_text": "A karttapullautin panic aborts the whole process, so the grid is re-run -- it resumes by itself, skipping finished tiles. An attempt that makes no progress is retried single-threaded, which identifies the offending tile unambiguously; that tile is then recorded in qc/pullauta_failures.tsv and skipped, while still serving as a neighbour for the tiles around it."
+                },
+                "png_variant": {
+                    "type": "string",
+                    "default": "depr",
+                    "enum": ["depr", "plain"],
+                    "description": "Which karttapullautin render to tile: with ('depr') or without depression markings.",
+                    "help_text": "Keeping only one halves the intermediate storage of a large run (~90 GB rather than ~175 GB for Bavaria)."
+                },
+                "scratch": {
+                    "type": ["boolean", "string"],
+                    "default": false,
+                    "description": "Nextflow scratch directive for the rendering process.",
+                    "help_text": "Off by default. `true` does work under podman but places the task directory on the container's own filesystem, which is the wrong place for tens of gigabytes of LiDAR. The rendering process removes its temporaries either way, so the work directory keeps only the finished PNGs. Turn this on when the node has a fast local disk the work directory is not already on."
+                }
+            }
+        },
+        "download": {
+            "title": "Download",
+            "type": "object",
+            "properties": {
+                "download_jobs": {
+                    "type": "integer",
+                    "default": 4,
+                    "minimum": 1,
+                    "description": "Parallel downloads per grid.",
+                    "help_text": "Multiplied by the number of concurrent grids and by the number of nodes, this is how hard the pipeline hits the data provider. Open-data servers are usually not built for it; keep it modest and consider download_limit_rate."
+                },
+                "download_retries": {
+                    "type": "integer",
+                    "default": 3,
+                    "minimum": 1,
+                    "description": "Attempts per file before the grid is failed for retry."
+                },
+                "download_limit_rate": {
+                    "type": "string",
+                    "description": "curl --limit-rate value per stream, e.g. '20M'."
+                }
+            }
+        },
+        "osm": {
+            "title": "OpenStreetMap processing",
+            "type": "object",
+            "properties": {
+                "osm_chunk_size": {
+                    "type": "integer",
+                    "default": 32,
+                    "minimum": 1,
+                    "description": "Grids per osmium pass over the source .pbf.",
+                    "help_text": "One pass reads the whole .pbf, so batching many extracts into it avoids re-reading a country per grid. The ceiling is memory: --strategy=smart holds a set of object ids per extract."
+                },
+                "osm_buffer_m": {
+                    "type": "number",
+                    "default": 2000,
+                    "minimum": 0,
+                    "description": "Buffer added around each grid before cutting its OSM extract.",
+                    "help_text": "Together with the extract strategy, this is what keeps objects that straddle a grid boundary intact."
+                },
+                "osm_strategy": {
+                    "type": "string",
+                    "default": "smart",
+                    "enum": ["simple", "complete_ways", "smart"],
+                    "description": "osmium extract strategy.",
+                    "help_text": "'smart' keeps ways and multipolygon relations whole, so a lake or road crossing the boundary still renders as one object. 'simple' is faster but cuts them."
+                }
+            }
+        },
+        "tiles": {
+            "title": "Tile pyramid",
+            "type": "object",
+            "properties": {
+                "base_zoom": {
+                    "type": "integer",
+                    "default": 12,
+                    "minimum": 0,
+                    "maximum": 22,
+                    "description": "Zoom level at which tiling is parallelised.",
+                    "help_text": "One task per base-zoom tile, each holding every source render overlapping it in memory: about 1.1 GB at z12 for 0.42 m/px sources, a quarter of that per level higher. Raise it on a memory-constrained machine."
+                },
+                "max_zoom": {
+                    "type": "integer",
+                    "default": 18,
+                    "minimum": 0,
+                    "maximum": 22,
+                    "description": "Deepest zoom level to generate.",
+                    "help_text": "z18 is about 0.4 m/px at central-European latitudes, which matches karttapullautin's 0.4233 m/px output. Each extra level quadruples the file count: ~8.8 M tiles for Bavaria at z18 against ~2.2 M at z17."
+                },
+                "min_zoom": {
+                    "type": "integer",
+                    "default": 8,
+                    "minimum": 0,
+                    "maximum": 22,
+                    "description": "Shallowest zoom level, built by halving the base-zoom tiles.",
+                    "help_text": "Set equal to base_zoom to skip overviews, but note that a pyramid which starts at z12 cannot be zoomed out to a regional view."
+                }
+            }
+        },
+        "validation": {
+            "title": "Input validation",
+            "type": "object",
+            "properties": {
+                "validate_tiles": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Validate every row of the tiles CSV against assets/schema_tiles.json before starting.",
+                    "help_text": "About 18 s for Bavaria's 72,000 rows -- cheap next to what an invalid row costs three processes later."
+                },
+                "validate_tiles_in_python": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Validate the tiles CSV inside PLAN_GRIDS instead of in the workflow.",
+                    "help_text": "An escape hatch for CSVs large enough that validating in Nextflow is slow. It uses the same schema file, so the contract has only one definition either way."
+                }
+            }
+        },
+        "containers": {
+            "title": "Container images",
+            "description": "Built locally by containers/build.sh; override to pull from a registry instead.",
+            "type": "object",
+            "properties": {
+                "container_karttapullautin": {
+                    "type": "string",
+                    "default": "mapant/karttapullautin:2.13.0",
+                    "description": "Image with the three ISA builds of karttapullautin plus curl and coreutils."
+                },
+                "container_gdal": {
+                    "type": "string",
+                    "default": "mapant/gdal:latest",
+                    "description": "Image with ogr2ogr (OSM driver required) and zip."
+                },
+                "container_osmium": {
+                    "type": "string",
+                    "default": "mapant/osmium:latest",
+                    "description": "Image with osmium-tool."
+                },
+                "container_k2t": {
+                    "type": "string",
+                    "default": "mapant/k2t:latest",
+                    "description": "Image with karttapullautin2tiles; doubles as the Python image for bin/*.py."
+                }
+            }
+        }
+    },
+    "allOf": [
+        { "$ref": "#/$defs/input_output" },
+        { "$ref": "#/$defs/region" },
+        { "$ref": "#/$defs/grids" },
+        { "$ref": "#/$defs/download" },
+        { "$ref": "#/$defs/osm" },
+        { "$ref": "#/$defs/tiles" },
+        { "$ref": "#/$defs/validation" },
+        { "$ref": "#/$defs/containers" }
+    ]
+}

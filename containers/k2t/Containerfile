@@ -1,0 +1,39 @@
+# karttapullautin2tiles, and the generic Python image for everything in bin/.
+#
+# One image serves both because k2t's own dependency set is already exactly what the planning and
+# post-processing scripts need: geopandas brings shapely and pandas, and pyproj, mercantile,
+# rasterio and pillow come with it. Adding a second Python image to run bin/plan_grids.py would
+# duplicate ~400 MB of wheels to gain nothing.
+#
+# python:3.13-slim, not 3.14: geopandas/rasterio/pyproj publish manylinux wheels for cp313, and a
+# missing wheel here turns a 30-second image build into a from-source GDAL compile.
+FROM docker.io/library/python:3.13-slim
+
+ARG K2T_VERSION=
+
+# procps: Nextflow shells out to `ps` for task metrics and fails the task without it.
+#
+# libexpat1: rasterio's manylinux wheel links libexpat.so.1 (via its bundled GDAL) but does not
+# vendor it, and python:*-slim is minimal enough not to have it. Without this, every rasterio
+# import -- so every k2t invocation -- dies with
+#     ImportError: libexpat.so.1: cannot open shared object file
+# which is a runtime failure the pip install step reports as success.
+#
+# APT::Sandbox::User=root: see containers/build.sh.
+RUN apt-get -o APT::Sandbox::User=root update \
+ && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
+      libexpat1 \
+      procps \
+ && rm -rf /var/lib/apt/lists/*
+
+# jsonschema is not a k2t dependency; it is here so bin/plan_grids.py can validate the tiles CSV
+# against assets/schema_tiles.json itself when the row count makes doing it in Nextflow too slow.
+# Same schema file either way, so there is only ever one definition of the contract.
+RUN pip install --no-cache-dir \
+      "karttapullautin2tiles${K2T_VERSION:+==${K2T_VERSION}}" \
+      jsonschema \
+ && python -c "import karttapullautin2tiles, geopandas, shapely, pyproj, mercantile, rasterio, PIL, jsonschema; \
+print('k2t', karttapullautin2tiles.__version__)" \
+ && k2t --help > /dev/null
+
+CMD ["/bin/bash"]

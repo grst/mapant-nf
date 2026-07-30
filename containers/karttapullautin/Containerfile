@@ -1,0 +1,78 @@
+# karttapullautin, built three times for three instruction-set levels.
+#
+# Why build from source at all: the upstream release assets are only
+# karttapullautin-<arch>-<os>.tar.gz -- there is no AVX-512 variant. prompt.md requires that a
+# machine which supports AVX-512 actually gets an AVX-512 build, so the binaries have to be
+# compiled here with an explicit -C target-cpu.
+#
+# Why `--target x86_64-unknown-linux-gnu` on every cargo invocation, and not just RUSTFLAGS:
+# without --target, cargo applies RUSTFLAGS to *host* artifacts too -- build scripts and proc
+# macros (serde_derive, bytemuck_derive, and the -sys crates behind zip/laz all have them). The
+# x86-64-v4 pass would then compile a build script with AVX-512 and immediately execute it on the
+# build machine, which dies with SIGILL on anything older than Ice Lake. Naming the target makes
+# cargo treat this as a cross-compile, so RUSTFLAGS reaches only the target artifacts and build
+# scripts stay baseline. That is what lets an AVX2-only laptop build the AVX-512 binary at all.
+#
+# Runtime deps look unrelated to rendering, and are not: prompt.md requires that download,
+# checksum verification, rendering and cleanup all happen inside a *single* process, so curl and
+# coreutils have to live in this image alongside pullauta.
+FROM docker.io/library/rust:1.88-bookworm AS build
+
+ARG PULLAUTA_REPO=https://github.com/karttapullautin/karttapullautin
+ARG PULLAUTA_TAG=v2.13.0
+ARG CARGO_TARGET=x86_64-unknown-linux-gnu
+
+WORKDIR /src
+RUN git clone --depth 1 --branch "${PULLAUTA_TAG}" "${PULLAUTA_REPO}" . \
+ && git rev-parse HEAD > /src/GIT_SHA \
+ # rust-toolchain.toml pins channel "1.88" plus rustfmt/clippy. The image already *is* 1.88, but
+ # rustup would try to resolve and download that channel name as a separate toolchain. Nothing in
+ # a release build needs it.
+ && rm -f rust-toolchain.toml
+
+# A separate CARGO_TARGET_DIR per ISA: sharing one would make cargo rebuild the whole graph each
+# pass anyway (RUSTFLAGS is part of the fingerprint), and keeping them apart makes the COPY below
+# unambiguous. All of it is discarded with this stage.
+RUN set -eux; \
+    for isa in x86-64 x86-64-v3 x86-64-v4; do \
+        echo "=== building for target-cpu=${isa} ==="; \
+        RUSTFLAGS="-C target-cpu=${isa}" \
+        CARGO_TARGET_DIR="/build/${isa}" \
+        cargo build --release --locked --target "${CARGO_TARGET}"; \
+    done
+
+
+FROM docker.io/library/debian:stable-slim
+
+# apt normally drops privileges to the _apt user (UID 42) to download packages. In the
+# devcontainer this pipeline is developed in, container UID 0 is the only UID that exists, so
+# that setgroups/seteuid pair fails and the download method dies. APT::Sandbox::User=root keeps
+# apt as root instead, which is safe here: the build already runs unprivileged inside a user
+# namespace, so apt's own sandbox is defence in depth we cannot use rather than a boundary being
+# removed. See containers/build.sh for the full story.
+#
+# procps is not optional: Nextflow shells out to `ps` to collect task metrics and fails the task
+# with "Command 'ps' required by nextflow to collect task metrics cannot be found" without it.
+RUN apt-get -o APT::Sandbox::User=root update \
+ && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
+      ca-certificates \
+      coreutils \
+      curl \
+      procps \
+ && rm -rf /var/lib/apt/lists/*
+
+ARG CARGO_TARGET=x86_64-unknown-linux-gnu
+COPY --from=build /build/x86-64/${CARGO_TARGET}/release/pullauta    /opt/karttapullautin/pullauta-baseline
+COPY --from=build /build/x86-64-v3/${CARGO_TARGET}/release/pullauta /opt/karttapullautin/pullauta-v3
+COPY --from=build /build/x86-64-v4/${CARGO_TARGET}/release/pullauta /opt/karttapullautin/pullauta-v4
+COPY --from=build /src/GIT_SHA                                     /opt/karttapullautin/GIT_SHA
+COPY --from=build /src/osm.txt                                     /opt/karttapullautin/osm.txt.example
+COPY --from=build /src/pullauta.default.ini                        /opt/karttapullautin/pullauta.default.ini
+COPY pullauta /usr/local/bin/pullauta
+RUN chmod 0755 /usr/local/bin/pullauta /opt/karttapullautin/pullauta-*
+
+# Without a backtrace, a panic report to the karttapullautin devs is barely actionable, and
+# collecting those reports is an explicit requirement.
+ENV RUST_BACKTRACE=1
+
+CMD ["/bin/bash"]

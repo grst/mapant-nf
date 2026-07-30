@@ -1,0 +1,86 @@
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://raw.githubusercontent.com/grst/mapant/main/assets/schema_tiles.json",
+    "title": "mapant - tiles CSV contract",
+    "description": "One row per LiDAR tile. This file is the pipeline's input contract: any region or country can be processed by producing a CSV that satisfies it. Columns not listed here are ignored, so a source-specific extra column (Bavaria's `units`, which actually holds the Regierungsbezirk name) costs nothing.",
+    "type": "array",
+    "uniqueEntries": ["tile"],
+    "items": {
+        "type": "object",
+        "properties": {
+            "tile": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]*\\.(laz|las|LAZ|LAS)$",
+                "errorMessage": "`tile` must be a bare .laz/.las filename with no directory component; it is used verbatim as the filename inside karttapullautin's input folder and as the stem of the rendered PNG."
+            },
+            "url": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^(https?://|s3://|gs://|file://|/|\\./)",
+                "errorMessage": "`url` must be an http(s)/s3/gs/file URL or an absolute/relative path. It is fetched by curl, so anything curl understands works."
+            },
+            "size_bytes": {
+                "type": "integer",
+                "minimum": 1,
+                "errorMessage": "`size_bytes` must be a positive integer. It is checked against the server's Content-Length before the (much more expensive) sha256 pass, so a wrong value here costs a redundant download."
+            },
+            "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-fA-F]{64}$",
+                "errorMessage": "`sha256` must be 64 hex characters. Checksums are mandatory: a silently truncated laz renders as a hole in the map rather than as an error."
+            },
+            "crs": {
+                "type": "string",
+                "pattern": "^EPSG:[0-9]{4,6}$",
+                "errorMessage": "`crs` must be an `EPSG:<code>` string naming the CRS of min_x/min_y/max_x/max_y. karttapullautin cannot reproject, so every tile in one grid must share a CRS; the pipeline currently refuses input that mixes CRSs at all."
+            },
+            "min_x": {
+                "type": "number",
+                "errorMessage": "`min_x` must be a number in the units of `crs` (metres for a UTM zone)."
+            },
+            "min_y": {
+                "type": "number",
+                "errorMessage": "`min_y` must be a number in the units of `crs` (metres for a UTM zone)."
+            },
+            "max_x": {
+                "type": "number",
+                "errorMessage": "`max_x` must be a number in the units of `crs`, greater than `min_x`."
+            },
+            "max_y": {
+                "type": "number",
+                "errorMessage": "`max_y` must be a number in the units of `crs`, greater than `min_y`."
+            },
+            "min_lon": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180,
+                "errorMessage": "`min_lon` is optional; when absent it is derived from the projected bbox with pyproj. If present it must be a WGS84 longitude."
+            },
+            "min_lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90,
+                "errorMessage": "`min_lat` is optional; when absent it is derived from the projected bbox with pyproj. If present it must be a WGS84 latitude."
+            },
+            "max_lon": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180,
+                "errorMessage": "`max_lon` is optional; when absent it is derived from the projected bbox with pyproj. If present it must be a WGS84 longitude."
+            },
+            "max_lat": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90,
+                "errorMessage": "`max_lat` is optional; when absent it is derived from the projected bbox with pyproj. If present it must be a WGS84 latitude."
+            }
+        },
+        "required": ["tile", "url", "size_bytes", "sha256", "crs", "min_x", "min_y", "max_x", "max_y"],
+        "dependentRequired": {
+            "min_lon": ["min_lat", "max_lon", "max_lat"],
+            "min_lat": ["min_lon", "max_lon", "max_lat"],
+            "max_lon": ["min_lon", "min_lat", "max_lat"],
+            "max_lat": ["min_lon", "min_lat", "max_lon"]
+        }
+    }
+}

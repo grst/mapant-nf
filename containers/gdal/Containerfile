@@ -1,0 +1,25 @@
+# ogr2ogr, for turning a per-grid OSM extract into the ESRI Shapefile set that karttapullautin
+# renders vectors from.
+#
+# Debian's gdal-bin rather than ghcr.io/osgeo/gdal:ubuntu-small-*: the small OSGeo images are
+# built without several optional drivers, and this image is useless without the OSM one. Debian
+# builds gdal against libexpat and sqlite3, so OSM is present -- but that is asserted at build
+# time below rather than assumed, because it is the kind of thing that silently changes between
+# releases and would surface as an empty shapefile rather than as an error.
+#
+# zip, because karttapullautin does not read a shapefile directory -- it looks for *.zip in its
+# lazfolder and unzips them itself.
+FROM docker.io/library/debian:stable-slim
+
+# APT::Sandbox::User=root and procps: see containers/build.sh for why both are needed.
+RUN apt-get -o APT::Sandbox::User=root update \
+ && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
+      gdal-bin \
+      procps \
+      zip \
+ && rm -rf /var/lib/apt/lists/* \
+ && ogr2ogr --version \
+ && ogr2ogr --formats | grep -qi -- '^ *OSM ' \
+      || { echo 'FATAL: this gdal build has no OSM driver; use ghcr.io/osgeo/gdal:ubuntu-full-*' >&2; exit 1; }
+
+CMD ["/bin/bash"]

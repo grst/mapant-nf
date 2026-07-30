@@ -1,0 +1,18 @@
+# osmium-tool, for cutting per-grid extracts out of a country-sized .osm.pbf.
+#
+# This exists as its own image, separate from gdal, because it is used for a different step with a
+# very different resource profile: one osmium pass reads the whole pbf once and writes many
+# extracts (memory-hungry, run a handful of times), while ogr2ogr runs per grid on a small extract
+# (cheap, run once per grid). Keeping them apart lets conf/base.config give each realistic cpus
+# and memory.
+FROM docker.io/library/debian:stable-slim
+
+# APT::Sandbox::User=root and procps: see containers/build.sh for why both are needed.
+RUN apt-get -o APT::Sandbox::User=root update \
+ && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
+      osmium-tool \
+      procps \
+ && rm -rf /var/lib/apt/lists/* \
+ && osmium --version
+
+CMD ["/bin/bash"]

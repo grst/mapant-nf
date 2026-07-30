@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Dispatch to the karttapullautin build that matches this CPU.
+#
+# Three binaries are baked into the image (see Containerfile), compiled for x86-64,
+# x86-64-v3 and x86-64-v4. Which one to run cannot be decided at build time -- the image is built
+# once and may run on anything -- so it is decided here, per invocation, from /proc/cpuinfo.
+#
+# The choice is logged to stderr on purpose: it ends up in .command.err, so a run's trace records
+# which ISA produced which tiles. That matters because renders from different ISA levels are not
+# guaranteed bit-identical (floating-point contraction and vectorisation differ), so a byte
+# comparison between two tiles is only meaningful when both were produced by the same variant.
+#
+# Set PULLAUTA_ISA=baseline|v3|v4 to override, which is what makes such comparisons possible.
+set -euo pipefail
+
+readonly BIN_DIR=/opt/karttapullautin
+
+# The x86-64-v3 and -v4 microarchitecture levels are defined as flag sets rather than as CPU
+# models, so probe the flags. Only the ones that gate autovectorisation are checked; a CPU with
+# avx512f but without vl/bw/dq does not exist in practice, but a v4 binary on such a chip would
+# SIGILL, so the check is cheap insurance.
+readonly V3_FLAGS=(avx avx2 fma bmi1 bmi2)
+readonly V4_FLAGS=(avx512f avx512vl avx512bw avx512dq)
+
+flags=" $(awk '/^flags[[:space:]]*:/ { sub(/^flags[[:space:]]*:[[:space:]]*/, ""); print; exit }' /proc/cpuinfo) "
+
+has_all() {
+    local f
+    for f in "$@"; do
+        [[ $flags == *" $f "* ]] || return 1
+    done
+}
+
+variant="${PULLAUTA_ISA:-}"
+if [[ -z $variant ]]; then
+    if has_all "${V4_FLAGS[@]}"; then
+        variant=v4
+    elif has_all "${V3_FLAGS[@]}"; then
+        variant=v3
+    else
+        variant=baseline
+    fi
+fi
+
+readonly binary="${BIN_DIR}/pullauta-${variant}"
+if [[ ! -x $binary ]]; then
+    printf 'pullauta: no such ISA variant: %s (have: %s)\n' \
+        "$variant" "$(cd "$BIN_DIR" && echo pullauta-* | sed 's/pullauta-//g')" >&2
+    exit 127
+fi
+
+printf 'pullauta: ISA variant %s (%s)\n' "$variant" "$binary" >&2
+exec "$binary" "$@"

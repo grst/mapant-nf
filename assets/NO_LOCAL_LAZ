@@ -1,4 +1,0 @@
-# Sentinel for an unused optional Nextflow input. Nextflow cannot stage a path that does not
-# exist, so an absent optional input is represented by a named empty file instead; modules test the
-# staged name to decide whether the input was really supplied. Distinct names so two unused
-# optional inputs of one process cannot collide on the same staged filename.

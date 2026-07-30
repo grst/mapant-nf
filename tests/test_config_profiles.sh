@@ -64,10 +64,11 @@ for profile in "${PROFILES[@]}"; do
     check "outputDir (${output_dir:-unset}) follows outdir (${outdir:-unset})" \
         test -n "$output_dir" -a "$output_dir" = "$outdir"
 
-    # A missing image is a task that fails minutes into a run with "unable to pull".
-    for key in container_karttapullautin container_gdal container_osmium container_k2t; do
-        check "${key} is set" test -n "$(value_of "$out" "$key")"
-    done
+    # A process with no image is a task that fails minutes into a run with "unable to pull". Every
+    # process is covered by exactly one withName selector in conf/containers.config, so counting the
+    # resolved `container` lines catches both a missing selector and a typo in a process name.
+    check 'every process family has an image' \
+        test "$(grep -c "^ *container = " "$out")" -eq 4
 
     rm -f "$out" "${out}.err"
 done

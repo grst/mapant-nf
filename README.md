@@ -19,7 +19,7 @@ tiles.csv ──► PLAN_GRIDS ──┬─► grids/<grid_id>.csv    (which til
                                              │
                     PULLAUTA_GRID  ◄──────────┘   download → verify → render → delete
                             │
-                    MAKE_TILES ──► TILE_OVERVIEWS ──► tiles/{z}/{x}/{y}.png + index.html
+                    MAKE_TILES ──► tiles/{z}/{x}/{y}.png + index.html
 ```
 
 It builds on [karttapullautin](https://github.com/karttapullautin/karttapullautin) for the
@@ -81,11 +81,10 @@ summary:
 | `size_bytes`, `sha256` | yes | checked before and after download |
 | `crs` | yes | `EPSG:<code>` of the bbox below |
 | `min_x`, `min_y`, `max_x`, `max_y` | yes | projected bounding box |
-| `min_lon`, `min_lat`, `max_lon`, `max_lat` | no | derived with pyproj if absent |
 
-Any other column is ignored, so a source-specific extra costs nothing — nf-schema logs a
-harmless warning naming it. Tiles need not be uniform in size or form a complete lattice; holes
-and ragged edges are handled.
+Lon/lat is derived from `crs` with pyproj where it is needed, so it is not part of the contract. Any
+other column is ignored, so a source-specific extra costs nothing. Tiles need not be uniform in size
+or form a complete lattice; holes and ragged edges are handled.
 
 **Checksums are mandatory, and load-bearing.** A truncated laz does not make karttapullautin
 fail: it renders whatever points it managed to read and produces a plausible but wrong map. The
@@ -95,7 +94,7 @@ from `--laz_local_dir`.
 
 ## How it works, and why
 
-### The halo is 127 m, so grid size is not a quality setting
+### The halo is 127 m, so grid size is only a download trade-off
 
 The obvious design here is wrong. Rendering tiles one at a time produces edge artifacts, so the
 instinct is to batch many tiles and throw the outer ones away — trading compute against quality
@@ -104,30 +103,22 @@ via the batch size.
 But reading karttapullautin's source (`src/process.rs::batch_process`, v2.13.0) shows it already
 solves this. For each tile it takes that tile's own bounding box, expands it by exactly **127 m**,
 reads points from *every* laz file in its input folder overlapping that box, renders, and crops
-back to the tile. So:
-
-- a tile rendered with all neighbours within 127 m present is **byte-identical** to the same
-  tile rendered in any larger batch — there is no residual artifact to trade against;
-- with 1 km tiles that means **one ring of neighbours**, always;
-- `grid_size` is therefore purely a download/disk trade-off.
+back to the tile. So a tile rendered with all neighbours within 127 m present is **byte-identical**
+to the same tile rendered in any larger batch, and since tiles are at least 1 km across, "all
+neighbours within 127 m" is one ring of the lattice.
 
 `tests/test_grid_independence.sh` renders the same tile alone and inside a 2×2 block and compares
 the bytes, so this claim is checked rather than believed. `-profile test_local` checks the visible
 consequence: it renders 8 tiles as *two independent grids* and the finished 4 km × 2 km map has no
 seam at the grid boundary — contours and vegetation run straight through it.
 
-The halo is expressed as a distance (`params.pullauta_halo_m`, default 127) and resolved with a
-spatial index, which is what makes non-uniform tile sizes and dataset holes work for free.
+The ring is drawn from the **whole** CSV, not from the region-filtered selection. Otherwise a
+`--region_bbox` run would render its edge tiles from fewer points than a full run would, and a small
+test region would not be a faithful sample.
 
-One consequence worth stating: the halo is drawn from the **whole** CSV, not from the
-region-filtered selection. Otherwise a `--region_bbox` run would render its edge tiles from fewer
-points than a full run would, and a small test region would not be a faithful sample.
-
-### Grid size is a download trade-off
-
-Each grid fetches its core tiles plus a one-tile ring, and the ring is re-fetched by every grid
-that borders it. Bigger grids amortise that better but need more disk per concurrent task. At
-Bavaria's mean of 208 MB/tile:
+What is left is an IO trade-off. Each grid fetches its core tiles plus the ring, and the ring is
+re-fetched by every grid that borders it; bigger grids amortise that better but need more disk per
+concurrent task. At Bavaria's mean of 208 MB/tile:
 
 | `grid_size` | files per grid | laz | + temporaries | peak disk per task | download amplification |
 | --- | --- | --- | --- | --- | --- |
@@ -163,11 +154,6 @@ karttapullautin does not do this itself. `savetempfiles`/`savetempfolders` contr
 files, which is why the prototype run in `testdata/kemptner_wald/` still contains four 1.5 GB of
 them.
 
-`params.scratch` maps to Nextflow's `scratch` directive and is off by default. It does work under
-podman, but it places the task directory on the *container's* own filesystem — the wrong place
-for tens of gigabytes. Turn it on when the node has a fast local disk the work dir is not on;
-correctness does not depend on it either way.
-
 ### Surviving the renderer
 
 karttapullautin v2 uses `.unwrap()` throughout, so one malformed tile aborts the whole process —
@@ -185,9 +171,9 @@ without losing the other ninety tiles in the grid, works like this:
    and blacklist it with a placeholder. Blacklisting rather than deleting the laz is what keeps
    its *neighbours* correct; removing the file would silently degrade their borders.
 
-`tests/test_run_pullauta_recovery.sh` exercises all of this against a stub renderer that
-reproduces karttapullautin's failure behaviour, because the tile that triggers the real bug is by
-definition not one we have.
+`tests/test_run_pullauta.py` exercises all of this against a stub renderer that reproduces
+karttapullautin's failure behaviour, because the tile that triggers the real bug is by definition not
+one we have.
 
 Exit status is a deliberate contract, so that Nextflow retries what retrying can fix:
 
@@ -233,9 +219,11 @@ One task per base-zoom tile bounds memory (k2t holds every overlapping source re
 ~1.1 GB at z12 for 0.42 m/px sources). Because k2t's per-parent subtrees are disjoint, publishing
 many tasks into one pyramid is a plain union.
 
-Zoom levels below the base are built by halving finished tiles rather than by asking k2t for them.
-That is both far cheaper and *more* accurate: k2t treats each output tile as linear in lon/lat,
-an approximation that is excellent at high zoom and worst exactly at low zoom.
+The pyramid spans `base_zoom` to `max_zoom` and nothing shallower: below the base zoom the generated
+viewer shows OSM's own raster tiles. Generating overview levels would mean a reduction step over every
+finished tile — a barrier at the end of the run — to produce a handful of images that say less than
+OSM already does at those scales. (The viewer therefore needs network access, as it already did for
+Leaflet itself; the tiles do not.)
 
 ### AVX-512
 
@@ -264,7 +252,7 @@ the v3 and baseline builds none. CI runs that check on every build of the image.
 | `pullauta_processes` | 2 | 16 |
 | `PULLAUTA_GRID` `maxForks` | 1 | 7 |
 | `base_zoom` | 13 | 12 |
-| `max_zoom` / `min_zoom` | 16 / 9 | 18 / 8 |
+| `max_zoom` | 16 | 18 |
 | `publish_mode` | `copy` | `link` |
 
 Disk, not CPU, is the binding constraint: peak usage is `maxForks × peak disk per task` from the
@@ -344,15 +332,14 @@ Granite Rapids has AVX-512, so the v4 build is selected there — check for
 
 ## Tests
 
-The first five rows run in CI on every pull request and every push to `main`
+The first four rows run in CI on every pull request and every push to `main`
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The rest need the ~52 GB of LiDAR in
 `testdata/`, or a multi-gigabyte download, so they are run by hand before a release.
 
 | Command | What it establishes | Time | CI |
 | --- | --- | --- | --- |
-| `pytest tests/` | planning geometry and the CSV schema — 34 tests | 1 s | ✅ |
-| `bash tests/test_run_pullauta_recovery.sh` | crash recovery against a stub renderer — 30 assertions | 10 s | ✅ |
-| `bash tests/test_stub_wiring.sh` | the whole DAG with fabricated outputs: joins, fan-in, nested publishing, `-resume` — 21 assertions | 1 min | ✅ |
+| `pytest tests/` | planning geometry, the CSV schema, and crash recovery against a stub renderer — 37 tests | 4 s | ✅ |
+| `bash tests/test_stub_wiring.sh` | the whole DAG with fabricated outputs: joins, fan-in, nested publishing, `-resume` — 19 assertions | 1 min | ✅ |
 | `bash tests/test_config_profiles.sh` | every profile resolves and derived settings track their params | 30 s | ✅ |
 | `nextflow lint .` + `shellcheck` | strict-parser clean; scripts clean | 10 s | ✅ |
 | `nextflow run . -profile podman,test_local` | end to end, no network: 8 tiles, 2 grids, **no seam at the grid boundary**, `work/` left at 20 MB | ~15 min | |
@@ -400,10 +387,16 @@ One manual step, once: a package published by `GITHUB_TOKEN` starts out **privat
 set to public under *Packages ▸ Package settings ▸ Change visibility*. Nothing in a workflow can do
 this — it needs a scope `GITHUB_TOKEN` does not have.
 
-For a run whose toolchain has to be reconstructible later, pin the `ctx-` tags rather than `latest`:
+For a run whose toolchain has to be reconstructible later, pin the `ctx-` tags rather than `latest`.
+Images are config, not parameters — override the selector from `conf/containers.config` in a file of
+your own and pass it with `-c`:
 
-```bash
-nextflow run . --container_k2t ghcr.io/grst/mapant-nf/k2t:ctx-6033ed3b5add
+```groovy
+process {
+    withName: 'PLAN_GRIDS|RENDER_INI|MAKE_TILES|TILE_VIEWER' {
+        container = 'ghcr.io/grst/mapant-nf/k2t:ctx-6033ed3b5add'
+    }
+}
 ```
 
 ## Known limitations
@@ -412,10 +405,11 @@ nextflow run . --container_k2t ghcr.io/grst/mapant-nf/k2t:ctx-6033ed3b5add
   `--region_bbox` can process a multi-zone dataset one zone at a time. Full support needs a warp
   step upstream of `parent_tiles.csv`; it must not go inside `MAKE_TILES`, because k2t writes
   opaque white for nodata and two runs cannot be alpha-composited.
-- **The halo is computed from the CSV's bounding boxes, karttapullautin's from the LAZ headers.**
-  If they disagree the halo is subtly wrong with no error. Raising `params.pullauta_halo_m` above
-  127 buys margin at the cost of fetching more; `test_local` renders real files, so it would show
-  up there.
+- **The ring is computed from the CSV's bounding boxes, karttapullautin's halo from the LAZ headers.**
+  If they disagree the halo is subtly wrong with no error. `test_local` renders real files, so it
+  would show up there.
+- **One ring assumes tiles wider than 127 m**, which every LiDAR product this targets is by two
+  orders of magnitude. A dataset of sub-127 m tiles would need more than one ring.
 - **A corrupt laz that passes its checksum poisons its neighbours**, because they read it too.
   The recovery ladder will blacklist tiles one by one and ultimately fail the grid, which is
   reported but not worked around.

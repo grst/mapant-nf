@@ -101,10 +101,10 @@ TILE_COLUMNS = ["tile", "url", "size_bytes", "sha256", "crs", "min_x", "min_y", 
 # ---------------------------------------------------------------------------
 # halo geometry -- the property the whole grid design rests on
 # ---------------------------------------------------------------------------
-def test_halo_is_exactly_one_ring_for_1km_tiles():
+def test_halo_is_exactly_one_ring():
     """
-    karttapullautin reads neighbours within 127 m of a tile. For 1 km tiles that is one ring and
-    no more -- fetching a second ring would be pure waste, fetching none would produce seams.
+    karttapullautin reads neighbours within 127 m of a tile, and tiles are at least 1 km across, so
+    one ring is exactly right: a second would be pure waste, none would produce seams.
     """
     # Cells 3..5 with grid_size=3 land in a single lattice block (3//3 == 5//3 == 1).
     pool = lattice(range(0, 9), range(0, 9))
@@ -113,7 +113,6 @@ def test_halo_is_exactly_one_ring_for_1km_tiles():
         pool,
         crs="EPSG:25832",
         grid_size=3,
-        halo_m=127.0,
     )
     assert len(grids) == 1
     (parts,) = grids.values()
@@ -122,7 +121,7 @@ def test_halo_is_exactly_one_ring_for_1km_tiles():
     assert len(parts["halo"]) == 16
     halo_names = {t.tile for t in parts["halo"]}
     assert "2_2.laz" in halo_names, "diagonal neighbour must be included (pullauta expands a rectangle)"
-    assert "1_4.laz" not in halo_names, "second ring is 873 m away and must not be fetched"
+    assert "1_4.laz" not in halo_names, "the second ring is 873 m away and must not be fetched"
 
 
 def test_a_core_region_not_aligned_to_the_lattice_splits_across_grids():
@@ -135,33 +134,21 @@ def test_a_core_region_not_aligned_to_the_lattice_splits_across_grids():
     """
     pool = lattice(range(0, 9), range(0, 9))
     grids = pg.build_grids(
-        block(pool, range(2, 5), range(2, 5)), pool, crs="EPSG:25832", grid_size=3, halo_m=127.0
+        block(pool, range(2, 5), range(2, 5)), pool, crs="EPSG:25832", grid_size=3
     )
     assert len(grids) == 4
     assert sum(len(p["core"]) for p in grids.values()) == 9, "every core tile still rendered once"
 
 
-def test_halo_widens_automatically_when_tiles_are_smaller_than_the_halo():
-    """
-    With 100 m tiles, 127 m of reach spans two rings. Nothing in the code counts rings, so this
-    should just work -- which is the point of using a distance query rather than a ring count.
-    """
-    pool = lattice(range(0, 9), range(0, 9), size=100.0)
-    core = [t for t in pool if t.tile == "4_4.laz"]
-    grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=1, halo_m=127.0)
-    (parts,) = grids.values()
-    halo_names = {t.tile for t in parts["halo"]}
-    assert "3_3.laz" in halo_names          # first ring
-    assert "2_4.laz" in halo_names          # second ring, 100 m away, still within 127
-    assert "1_4.laz" not in halo_names      # third ring, 200 m away
-
-
 def test_every_halo_tile_is_genuinely_within_reach_and_none_are_missed():
-    """Cross-check build_grids against a brute-force distance test over the whole pool."""
+    """
+    Cross-check the lattice ring against a brute-force distance test over the whole pool: the ring
+    has to be exactly the set of files karttapullautin will read.
+    """
     pool = lattice(range(0, 8), range(0, 8))
     # Cells 4..5 with grid_size=2 are one block (4//2 == 5//2 == 2).
     core = [t for t in pool if t.tile in {"4_4.laz", "5_4.laz", "4_5.laz", "5_5.laz"}]
-    grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=2, halo_m=127.0)
+    grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=2)
     (parts,) = grids.values()
 
     core_names = {t.tile for t in core}
@@ -186,7 +173,7 @@ def test_halo_survives_holes_and_dataset_edges():
     """A missing neighbour is simply absent; nothing raises and nothing is invented."""
     pool = [t for t in lattice(range(0, 5), range(0, 5)) if t.tile != "1_1.laz"]
     core = [t for t in pool if t.tile == "0_0.laz"]  # corner of the dataset
-    grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=1, halo_m=127.0)
+    grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=1)
     (parts,) = grids.values()
     halo_names = {t.tile for t in parts["halo"]}
     assert halo_names == {"1_0.laz", "0_1.laz"}, "the hole and the off-dataset cells are gone"
@@ -201,8 +188,8 @@ def test_halo_pool_is_global_so_a_filtered_region_renders_identically():
     pool = lattice(range(0, 7), range(0, 7))
     core = [t for t in pool if t.tile == "3_3.laz"]
 
-    from_full_pool = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=1, halo_m=127.0)
-    from_selection = pg.build_grids(core, core, crs="EPSG:25832", grid_size=1, halo_m=127.0)
+    from_full_pool = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=1)
+    from_selection = pg.build_grids(core, core, crs="EPSG:25832", grid_size=1)
 
     assert len(next(iter(from_full_pool.values()))["halo"]) == 8
     assert len(next(iter(from_selection.values()))["halo"]) == 0
@@ -217,7 +204,7 @@ def test_core_output_is_independent_of_grid_size():
     core = block(pool, range(2, 8), range(2, 8))
 
     def reach_of(tile_name: str, grid_size: int) -> set[str]:
-        grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=grid_size, halo_m=127.0)
+        grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=grid_size)
         for parts in grids.values():
             names = {t.tile for t in parts["core"]}
             if tile_name in names:
@@ -228,7 +215,8 @@ def test_core_output_is_independent_of_grid_size():
                 return {
                     t.tile
                     for t in pool
-                    if t.tile in available and t.geometry().intersection(reach).area > 0
+                    if t.tile in available
+                    and box(t.min_x, t.min_y, t.max_x, t.max_y).intersection(reach).area > 0
                 }
         raise AssertionError(f"{tile_name} not in any grid")
 
@@ -248,8 +236,8 @@ def test_grid_ids_are_stable_when_the_region_filter_changes():
     wide = block(pool, range(2, 8), range(0, 10))
     narrow = block(wide, range(4, 8), range(0, 10))
 
-    grids_wide = pg.build_grids(wide, pool, crs="EPSG:25832", grid_size=2, halo_m=127.0)
-    grids_narrow = pg.build_grids(narrow, pool, crs="EPSG:25832", grid_size=2, halo_m=127.0)
+    grids_wide = pg.build_grids(wide, pool, crs="EPSG:25832", grid_size=2)
+    grids_narrow = pg.build_grids(narrow, pool, crs="EPSG:25832", grid_size=2)
 
     shared = set(grids_wide) & set(grids_narrow)
     assert shared, "narrowing the region must reuse grid ids, not renumber them"
@@ -328,13 +316,6 @@ def test_densification_strictly_widens_a_box_wide_enough_to_curve():
     assert (t.max_lat - corner_north) > 1e-4
 
 
-def test_supplied_lonlat_columns_are_not_overwritten():
-    tiles = [make_tile(590, 5268)]
-    tiles[0].min_lon, tiles[0].min_lat, tiles[0].max_lon, tiles[0].max_lat = 1.0, 2.0, 3.0, 4.0
-    pg.derive_lonlat(tiles)
-    assert (tiles[0].min_lon, tiles[0].max_lat) == (1.0, 4.0)
-
-
 def test_derive_lonlat_handles_more_than_one_crs():
     """Runs before the single-CRS check, so it must not assume one transformer."""
     tiles = [make_tile(590, 5268, crs="EPSG:25832"), make_tile(300, 5268, crs="EPSG:25833")]
@@ -398,50 +379,21 @@ def test_missing_required_column_names_what_is_missing(tmp_path):
         pg.read_tiles(csv_path)
 
 
-def test_min_laz_bytes_drops_from_core_but_keeps_as_halo():
-    """
-    A near-empty laz is the likeliest trigger of the karttapullautin crash, so it can be excluded
-    from rendering -- but it is still a valid source of neighbouring points, and dropping it from
-    the halo too would degrade its neighbours' renders as well.
-    """
-    pool = lattice(range(0, 5), range(0, 5))
-    for t in pool:
-        if t.tile == "2_2.laz":
-            t.size_bytes = 10
-    kept, dropped, too_small = pg.select_tiles(
-        pool, bbox=None, bbox_crs=None, tile_regex=None, min_laz_bytes=1000
-    )
-    assert [t.tile for t in too_small] == ["2_2.laz"]
-    assert "2_2.laz" not in {t.tile for t in kept}
-    assert not dropped
-
-    grids = pg.build_grids(
-        [t for t in kept if t.tile == "2_3.laz"], pool, crs="EPSG:25832", grid_size=1, halo_m=127.0
-    )
-    (parts,) = grids.values()
-    assert "2_2.laz" in {t.tile for t in parts["halo"]}
-
-
 def test_region_filter_selecting_nothing_is_an_error():
     pool = lattice(range(0, 3), range(0, 3))
     pg.derive_lonlat(pool)
     with pytest.raises(pg.PlanError, match="selected no tiles"):
-        pg.select_tiles(
-            pool, bbox=(100.0, 60.0, 101.0, 61.0), bbox_crs="lonlat", tile_regex=None, min_laz_bytes=0
-        )
+        pg.select_tiles(pool, bbox=(100.0, 60.0, 101.0, 61.0), bbox_crs="lonlat")
 
 
 def test_bbox_filter_keeps_tiles_that_merely_overlap():
     """A region that cuts through a tile must still render it whole, not leave a ragged edge."""
     pool = lattice(range(0, 4), range(0, 4))
-    kept, _, _ = pg.select_tiles(
-        pool,
-        bbox=(1500.0, 1500.0, 2500.0, 2500.0),
-        bbox_crs="EPSG:25832",
-        tile_regex=None,
-        min_laz_bytes=0,
+    kept, dropped = pg.select_tiles(
+        pool, bbox=(1500.0, 1500.0, 2500.0, 2500.0), bbox_crs="EPSG:25832"
     )
     assert {t.tile for t in kept} == {"1_1.laz", "1_2.laz", "2_1.laz", "2_2.laz"}
+    assert len(dropped) == len(pool) - 4
 
 
 def test_tile_size_inference_uses_the_mode_not_the_mean():
@@ -478,16 +430,13 @@ def test_schema_accepts_a_real_bavaria_row():
             "min_y": 5543000,
             "max_x": 499000,
             "max_y": 5544000,
-            "min_lon": 8.9720652,
-            "min_lat": 50.0392942,
-            "max_lon": 8.9860352,
-            "max_lat": 50.0482907,
+            # An extra column the pipeline ignores; Bavaria's export really has this one.
             "units": "Regierungsbezirk Unterfranken",
         }
     )
 
 
-def test_schema_accepts_a_minimal_row_without_lonlat():
+def test_schema_accepts_a_local_path_instead_of_a_url():
     _validate_row(
         {
             "tile": "a.laz",
@@ -514,7 +463,6 @@ def test_schema_accepts_a_minimal_row_without_lonlat():
         pytest.param({"tile": "sub/dir/a.laz"}, id="tile-with-directory"),
         pytest.param({"tile": "a.tif"}, id="tile-wrong-extension"),
         pytest.param({"url": "ftp://example.invalid/a.laz"}, id="unsupported-url-scheme"),
-        pytest.param({"min_lat": 120}, id="latitude-out-of-range"),
     ],
 )
 def test_schema_rejects_bad_rows(bad):
@@ -530,32 +478,7 @@ def test_schema_rejects_bad_rows(bad):
         "min_y": 0,
         "max_x": 1,
         "max_y": 1,
-        "min_lon": 1,
-        "min_lat": 1,
-        "max_lon": 2,
-        "max_lat": 2,
     }
     row.update(bad)
     with pytest.raises(jsonschema.ValidationError):
         _validate_row(row)
-
-
-def test_schema_requires_all_four_lonlat_columns_together():
-    """Half a lon/lat envelope is worse than none: it would silently be treated as complete."""
-    import jsonschema
-
-    with pytest.raises(jsonschema.ValidationError):
-        _validate_row(
-            {
-                "tile": "a.laz",
-                "url": "https://example.invalid/a.laz",
-                "size_bytes": 1,
-                "sha256": "f" * 64,
-                "crs": "EPSG:32633",
-                "min_x": 0,
-                "min_y": 0,
-                "max_x": 1,
-                "max_y": 1,
-                "min_lon": 1,
-            }
-        )

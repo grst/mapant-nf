@@ -3,29 +3,18 @@
 Turn a CSV of LiDAR tiles into a processing plan: which tiles are rendered together, which are
 only there to supply neighbouring points, and which web-mercator tile each render feeds.
 
-Everything geometric in this pipeline lives here, on purpose. Nextflow's strict (v2) parser makes
-non-trivial logic in a workflow body awkward, and the interesting decisions below -- how wide the
-halo has to be, how to get a gap-free lon/lat envelope out of a UTM box -- are exactly the ones
-worth unit-testing. See tests/test_plan_grids.py.
+All of the pipeline's geometry lives here so that it can be unit-tested without Nextflow; see
+tests/test_plan_grids.py.
 
-The one number that drives the whole design
--------------------------------------------
 karttapullautin's batch mode (src/process.rs::batch_process, v2.13.0) renders each tile from the
-points of *every* laz file in its input folder that overlaps the tile's own bounding box expanded
-by 127 m, then crops the result back to the tile. So:
-
-  * A tile rendered with all neighbours within 127 m present is bit-identical to the same tile
-    rendered as part of any larger batch. There is no "edge artifact" left to trade against
-    batch size.
-  * With 1 km tiles that means a single ring of neighbours suffices, and `grid_size` is purely a
-    download/IO amortisation knob: bigger grids re-download proportionally fewer ring tiles.
-
-That is why the halo here is computed as a distance (--halo-m) rather than as a count of rings.
+points of every laz file overlapping the tile's bounding box expanded by 127 m, then crops back to
+the tile. Tiles are at least 1 km across, so one ring of neighbours always covers that reach, and a
+tile rendered with its ring present is byte-identical to the same tile rendered in any larger batch.
 
 Outputs (all relative to --outdir)
 ----------------------------------
 grids/<grid_id>.csv   one row per laz file the grid needs, role=core|halo
-grids.csv             one row per grid: crs, counts, bbox in CRS units and in lon/lat
+grids.csv             one row per grid: crs, counts, bbox
 parent_tiles.csv      long form (tile, parent, z, x, y, crs, n_core) -- the tiling fan-out
 osm_chunks/<id>.json  ready-made `osmium extract --config` files, several grids per pass
 plan_summary.txt      the numbers you want before starting a multi-terabyte run
@@ -37,7 +26,6 @@ import argparse
 import csv
 import json
 import math
-import re
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -45,9 +33,6 @@ from pathlib import Path
 
 import mercantile
 import pyproj
-from shapely.geometry import box
-from shapely.ops import unary_union
-from shapely.strtree import STRtree
 
 WGS84 = "EPSG:4326"
 
@@ -65,7 +50,6 @@ REQUIRED_COLUMNS = (
     "max_x",
     "max_y",
 )
-LONLAT_COLUMNS = ("min_lon", "min_lat", "max_lon", "max_lat")
 
 GRID_CSV_COLUMNS = (
     "tile",
@@ -96,7 +80,7 @@ class Tile:
     min_y: float
     max_x: float
     max_y: float
-    # Filled in by derive_lonlat(); the WGS84 envelope of the projected box.
+    # The WGS84 envelope of the projected box, filled in by derive_lonlat().
     min_lon: float = math.nan
     min_lat: float = math.nan
     max_lon: float = math.nan
@@ -110,21 +94,12 @@ class Tile:
     def height(self) -> float:
         return self.max_y - self.min_y
 
-    def geometry(self):
-        return box(self.min_x, self.min_y, self.max_x, self.max_y)
-
 
 # ---------------------------------------------------------------------------
 # Reading and checking the input
 # ---------------------------------------------------------------------------
 def read_tiles(path: Path) -> list[Tile]:
-    """
-    Read the tiles CSV.
-
-    Only the columns in the contract are touched; anything else in the file is ignored, so a
-    source-specific extra column costs nothing. (Bavaria's export has a `units` column that
-    actually holds the Regierungsbezirk name.)
-    """
+    """Read the tiles CSV, ignoring any column outside the contract."""
     with path.open(newline="") as fh:
         reader = csv.DictReader(fh)
         if reader.fieldnames is None:
@@ -136,7 +111,6 @@ def read_tiles(path: Path) -> list[Tile]:
                 f"found: {', '.join(reader.fieldnames)}\n"
                 f"see assets/schema_tiles.json for the contract"
             )
-        has_lonlat = all(c in reader.fieldnames for c in LONLAT_COLUMNS)
 
         tiles: list[Tile] = []
         for lineno, row in enumerate(reader, start=2):
@@ -152,16 +126,11 @@ def read_tiles(path: Path) -> list[Tile]:
                     max_x=float(row["max_x"]),
                     max_y=float(row["max_y"]),
                 )
-                if has_lonlat:
-                    t.min_lon = float(row["min_lon"])
-                    t.min_lat = float(row["min_lat"])
-                    t.max_lon = float(row["max_lon"])
-                    t.max_lat = float(row["max_lat"])
             except (TypeError, ValueError) as exc:
                 raise PlanError(f"{path}:{lineno}: {exc}") from exc
 
-            # nf-schema checks types and patterns; it cannot express "max beyond min", and a
-            # degenerate box would silently produce a grid that renders nothing.
+            # A degenerate box would silently produce a grid that renders nothing, and JSON Schema
+            # cannot express "max beyond min".
             if t.width <= 0 or t.height <= 0:
                 raise PlanError(
                     f"{path}:{lineno}: tile {t.tile!r} has a degenerate bbox "
@@ -174,59 +143,15 @@ def read_tiles(path: Path) -> list[Tile]:
     return tiles
 
 
-def validate_against_schema(path: Path, schema_path: Path) -> None:
-    """
-    Validate every row against assets/schema_tiles.json.
-
-    This duplicates what nf-schema does in the workflow, and exists for the case where the row
-    count makes doing it there too slow: same schema file, so there is only one definition of the
-    contract either way. Off by default (--schema is optional).
-    """
-    import jsonschema  # imported lazily: only needed on this path
-
-    schema = json.loads(schema_path.read_text())
-    item_schema = schema.get("items", schema)
-    validator = jsonschema.Draft202012Validator(item_schema)
-
-    numeric = {
-        f
-        for f, spec in item_schema.get("properties", {}).items()
-        if spec.get("type") in {"number", "integer"}
-    }
-    errors = 0
-    with path.open(newline="") as fh:
-        for lineno, row in enumerate(csv.DictReader(fh), start=2):
-            # CSV has no types; coerce the fields the schema declares numeric, and let a
-            # non-numeric value be reported by the schema as a type error rather than crashing.
-            coerced = {}
-            for key, value in row.items():
-                if key is None or value is None or value == "":
-                    continue
-                if key in numeric:
-                    try:
-                        coerced[key] = int(value) if item_schema["properties"][key]["type"] == "integer" else float(value)
-                    except ValueError:
-                        coerced[key] = value
-                else:
-                    coerced[key] = value
-            for err in validator.iter_errors(coerced):
-                errors += 1
-                if errors <= 20:
-                    print(f"{path}:{lineno}: {err.message}", file=sys.stderr)
-    if errors:
-        raise PlanError(f"{errors} row(s) in {path} violate {schema_path}")
-
-
 def require_single_crs(tiles: list[Tile]) -> str:
     """
     Refuse input that mixes coordinate reference systems.
 
-    Grids are per-CRS by construction -- karttapullautin compares raw header coordinates when it
-    decides which files overlap a tile's 127 m box, so mixing UTM zones inside one grid would
-    produce garbage rather than an error. Handling a genuinely multi-zone dataset needs a warp
-    step (reproject each foreign-CRS render onto the target lattice *before* tiling, because k2t
-    writes opaque white for nodata and two runs cannot be alpha-composited). That is not
-    implemented, so this fails loudly instead of quietly producing a broken map.
+    karttapullautin compares raw header coordinates when it decides which files overlap a tile, so
+    mixing UTM zones inside one grid produces garbage rather than an error. Supporting a multi-zone
+    dataset needs a warp step (each foreign-CRS render reprojected onto the target lattice *before*
+    tiling, because k2t writes opaque white for nodata and two runs cannot be alpha-composited);
+    that is not implemented, so this fails loudly instead.
     """
     counts = Counter(t.crs for t in tiles)
     if len(counts) == 1:
@@ -235,29 +160,25 @@ def require_single_crs(tiles: list[Tile]) -> str:
     raise PlanError(
         "the selected tiles span more than one CRS:\n"
         f"{detail}\n"
-        "Per-CRS reprojection is not implemented. Restrict the input to one CRS with "
-        "--bbox / --tile-regex, or reproject the sources first."
+        "Per-CRS reprojection is not implemented. Restrict the input to one CRS with --bbox, or "
+        "reproject the sources first."
     )
 
 
 def derive_lonlat(tiles: list[Tile]) -> None:
     """
-    Fill in the WGS84 envelope of each tile, unless the CSV already supplied one.
+    Fill in each tile's WGS84 envelope.
 
     `transform_bounds(densify_pts=...)` rather than transforming the four corners: a UTM box's
     edges are curves in lon/lat, so the corner-only envelope is *smaller* than the true one. Tiles
-    would then be assigned to fewer web-mercator parents than they actually cover, and the missing
-    assignments show up as seams in the finished map. Erring large is free -- k2t re-filters with
-    exact geometry -- so densify and take the wider answer.
+    would then be assigned to fewer web-mercator parents than they cover, which shows up as seams
+    in the finished map. Erring large is free -- k2t re-filters with exact geometry.
 
-    Grouped by CRS because this runs before any CRS check: a multi-CRS CSV is only rejected once
-    the region filter has had its chance to narrow the selection to a single zone.
+    Grouped by CRS because this runs before the single-CRS check: a multi-zone national dataset is
+    only rejected once the region filter has had its chance to narrow the selection.
     """
-    todo = [t for t in tiles if math.isnan(t.min_lon)]
-    if not todo:
-        return
     by_crs: dict[str, list[Tile]] = defaultdict(list)
-    for t in todo:
+    for t in tiles:
         by_crs[t.crs].append(t)
     for crs, group in by_crs.items():
         tr = pyproj.Transformer.from_crs(crs, WGS84, always_xy=True)
@@ -288,55 +209,29 @@ def select_tiles(
     *,
     bbox: tuple[float, float, float, float] | None,
     bbox_crs: str | None,
-    tile_regex: str | None,
-    min_laz_bytes: int,
-) -> tuple[list[Tile], list[Tile], list[Tile]]:
+) -> tuple[list[Tile], list[Tile]]:
     """
-    Apply the region filter. Returns (selected, dropped_by_filter, dropped_as_too_small).
+    Apply the region filter. Returns (selected, dropped).
 
     A tile is selected when its bbox *intersects* the region, so a region that cuts through tiles
     still renders them whole rather than leaving a ragged edge.
     """
-    kept = tiles
-    dropped: list[Tile] = []
+    if bbox is None:
+        return tiles, []
 
-    if tile_regex is not None:
-        pattern = re.compile(tile_regex)
-        matched = [t for t in kept if pattern.search(t.tile)]
-        dropped += [t for t in kept if not pattern.search(t.tile)]
-        kept = matched
+    minx, miny, maxx, maxy = bbox
+    if bbox_crs and bbox_crs.lower() not in {"lonlat", "wgs84", WGS84.lower()}:
+        # bbox given in the tiles' own CRS: compare projected coordinates directly.
+        def inside(t: Tile) -> bool:
+            return t.min_x < maxx and t.max_x > minx and t.min_y < maxy and t.max_y > miny
+    else:
+        def inside(t: Tile) -> bool:
+            return t.min_lon < maxx and t.max_lon > minx and t.min_lat < maxy and t.max_lat > miny
 
-    if bbox is not None:
-        minx, miny, maxx, maxy = bbox
-        if bbox_crs and bbox_crs.lower() not in {"lonlat", "wgs84", WGS84.lower()}:
-            # bbox given in the tiles' own CRS: compare projected coordinates directly.
-            def inside(t: Tile) -> bool:
-                return t.min_x < maxx and t.max_x > minx and t.min_y < maxy and t.max_y > miny
-        else:
-            def inside(t: Tile) -> bool:
-                return (
-                    t.min_lon < maxx and t.max_lon > minx and t.min_lat < maxy and t.max_lat > miny
-                )
-
-        selected = [t for t in kept if inside(t)]
-        dropped += [t for t in kept if not inside(t)]
-        kept = selected
-
-    # Undersized tiles are dropped from the *core* only. They stay eligible as halo, because a
-    # near-empty laz is still a legitimate source of neighbouring points, and excluding it would
-    # degrade the renders of its neighbours as well as skipping itself.
-    too_small: list[Tile] = []
-    if min_laz_bytes > 0:
-        too_small = [t for t in kept if t.size_bytes < min_laz_bytes]
-        kept = [t for t in kept if t.size_bytes >= min_laz_bytes]
-
+    kept = [t for t in tiles if inside(t)]
     if not kept:
-        raise PlanError(
-            "the region filter selected no tiles "
-            f"(bbox={bbox}, bbox_crs={bbox_crs}, tile_regex={tile_regex!r}, "
-            f"min_laz_bytes={min_laz_bytes})"
-        )
-    return kept, dropped, too_small
+        raise PlanError(f"the region filter selected no tiles (bbox={bbox}, bbox_crs={bbox_crs})")
+    return kept, [t for t in tiles if not inside(t)]
 
 
 # ---------------------------------------------------------------------------
@@ -346,8 +241,8 @@ def infer_tile_size(tiles: list[Tile]) -> tuple[float, float, bool]:
     """
     Infer the lattice cell size from the tiles themselves, as (width, height, uniform).
 
-    The modal size, not the mean: a handful of clipped tiles at a dataset's edge must not shift
-    the lattice everyone else is placed on.
+    The modal size, not the mean: a handful of clipped tiles at a dataset's edge must not shift the
+    lattice everyone else is placed on.
     """
     widths = Counter(round(t.width, 3) for t in tiles)
     heights = Counter(round(t.height, 3) for t in tiles)
@@ -363,9 +258,9 @@ def grid_id_for(crs: str, ix: int, iy: int, grid_size: int) -> str:
     """
     Name a grid from absolute lattice coordinates, never from the dataset's extent.
 
-    If the block index were relative to the first tile in the selection, changing the region
-    filter would renumber every grid and invalidate the whole `-resume` cache. Absolute indices
-    make a grid's identity a pure function of the tiles in it and `grid_size`.
+    A block index relative to the first selected tile would renumber every grid when the region
+    filter changes, invalidating the whole `-resume` cache. Absolute indices make a grid's identity
+    a pure function of the tiles in it and `grid_size`.
     """
     epsg = crs.split(":")[-1]
     return f"grid_{epsg}_{ix // grid_size}_{iy // grid_size}"
@@ -377,50 +272,45 @@ def build_grids(
     *,
     crs: str,
     grid_size: int,
-    halo_m: float,
 ) -> dict[str, dict[str, list[Tile]]]:
     """
-    Partition `core_tiles` into grids, and attach each grid's halo drawn from `halo_pool`.
+    Partition `core_tiles` into lattice blocks and attach each block's ring of neighbours.
 
-    Core assignment is a lattice block; the halo is a distance query, which is what makes this
-    work for datasets with holes, ragged edges or non-uniform tile sizes. The halo is the union of
-    each core tile's own 127 m box, which is exactly the set of files karttapullautin will read
-    -- mitred joins because pullauta expands a *rectangle* (minx-127 .. maxx+127), so a square
-    corner, not a rounded one, is the faithful shape.
-
-    `halo_pool` is deliberately the *whole* dataset rather than the region-filtered selection.
-    Halo membership decides what points a render can see, so drawing it from the selection would
-    make a `--bbox` run produce different pixels for the same tile than a full run does -- the
-    filtered run's edge tiles would silently lose their neighbours. Keeping the pool global is
-    what makes a small test region a faithful sample of the real thing, and it is what the
-    grid-independence test in tests/ relies on.
+    `halo_pool` is deliberately the *whole* dataset rather than the region-filtered selection. Halo
+    membership decides what points a render can see, so drawing it from the selection would make a
+    `--bbox` run produce different pixels than a full run for the same tile. Keeping the pool global
+    is what makes a small test region a faithful sample, and what
+    tests/test_grid_independence.sh relies on.
     """
     tile_w, tile_h, _ = infer_tile_size(core_tiles)
 
+    def index(t: Tile) -> tuple[int, int]:
+        return math.floor(t.min_x / tile_w), math.floor(t.min_y / tile_h)
+
     blocks: dict[str, list[Tile]] = defaultdict(list)
     for t in core_tiles:
-        ix = math.floor(t.min_x / tile_w)
-        iy = math.floor(t.min_y / tile_h)
+        ix, iy = index(t)
         blocks[grid_id_for(crs, ix, iy, grid_size)].append(t)
 
-    tree = STRtree([t.geometry() for t in halo_pool])
+    pool_by_cell: dict[tuple[int, int], list[Tile]] = defaultdict(list)
+    for t in halo_pool:
+        pool_by_cell[index(t)].append(t)
 
     grids: dict[str, dict[str, list[Tile]]] = {}
     for grid_id, core in sorted(blocks.items()):
         core_names = {t.tile for t in core}
-        reach = unary_union([t.geometry() for t in core]).buffer(
-            halo_m, join_style="mitre", cap_style="square"
-        )
-        halo = []
-        for idx in tree.query(reach):
-            cand = halo_pool[idx]
-            if cand.tile in core_names:
-                continue
-            # query() is bbox-based and therefore approximate; confirm a real overlap so a tile
-            # that merely touches the halo boundary is not downloaded for nothing. pullauta's own
-            # test is a strict inequality, so a zero-area touch contributes no points either.
-            if cand.geometry().intersection(reach).area > 0:
-                halo.append(cand)
+        ring = {
+            (ix + dx, iy + dy)
+            for ix, iy in (index(t) for t in core)
+            for dx in (-1, 0, 1)
+            for dy in (-1, 0, 1)
+        }
+        halo = [
+            t
+            for cell in ring
+            for t in pool_by_cell.get(cell, ())
+            if t.tile not in core_names
+        ]
         grids[grid_id] = {
             "core": sorted(core, key=lambda t: (t.min_x, t.min_y)),
             "halo": sorted(halo, key=lambda t: (t.min_x, t.min_y)),
@@ -471,11 +361,7 @@ def write_grid_index(outdir: Path, grids: dict[str, dict[str, list[Tile]]], crs:
     with (outdir / "grids.csv").open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(
-            [
-                "grid_id", "crs", "n_core", "n_halo", "bytes_total",
-                "min_x", "min_y", "max_x", "max_y",
-                "min_lon", "min_lat", "max_lon", "max_lat",
-            ]
+            ["grid_id", "crs", "n_core", "n_halo", "bytes_total", "min_x", "min_y", "max_x", "max_y"]
         )
         for grid_id, parts in grids.items():
             everything = parts["core"] + parts["halo"]
@@ -490,10 +376,6 @@ def write_grid_index(outdir: Path, grids: dict[str, dict[str, list[Tile]]], crs:
                     f"{min(t.min_y for t in everything):.6f}",
                     f"{max(t.max_x for t in everything):.6f}",
                     f"{max(t.max_y for t in everything):.6f}",
-                    f"{min(t.min_lon for t in everything):.7f}",
-                    f"{min(t.min_lat for t in everything):.7f}",
-                    f"{max(t.max_lon for t in everything):.7f}",
-                    f"{max(t.max_lat for t in everything):.7f}",
                 ]
             )
 
@@ -504,14 +386,11 @@ def write_parent_tiles(
     """
     Write the tile -> web-mercator-parent mapping, and return (n_parents, n_rows).
 
-    The `tile` column holds the tile *stem* -- no .laz suffix -- because that is what
-    karttapullautin names its outputs after (`<stem>.png`, `<stem>_depr.pgw`), and the workflow
-    joins this table against those filenames.
+    The `tile` column holds the tile *stem*, because that is what karttapullautin names its outputs
+    after (`<stem>.png`, `<stem>_depr.pgw`) and what the workflow joins on.
 
-    `n_core` on every row is the number of core tiles that feed that parent. Nextflow uses it as
-    the `groupKey` size, which is what lets tiling of a finished parent start while other grids
-    are still rendering -- and, because `groupTuple` still flushes short groups when the upstream
-    channel ends, what lets a tile that failed to render leave a hole instead of a deadlock.
+    `n_core` is the number of core tiles feeding that parent. Nextflow uses it as the `groupKey`
+    size, so tiling of a finished parent can start while other grids are still rendering.
     """
     rows: list[tuple[str, str, int, int, int]] = []
     per_parent: Counter[mercantile.Tile] = Counter()
@@ -541,13 +420,12 @@ def write_osm_chunks(
     """
     Write `osmium extract --config` files, several grids per file.
 
-    One osmium pass costs a full read of the source pbf (809 MB for Bavaria), so extracting per
-    grid would re-read it once per grid. osmium can cut many extracts in a single pass, which is
-    what these chunks are for. The chunk size stays modest because `--strategy=smart` keeps a
+    One osmium pass costs a full read of the source pbf (809 MB for Bavaria), so extracting per grid
+    would re-read it once per grid. The chunk size stays modest because `--strategy=smart` keeps a
     per-extract id set in memory.
 
-    The bbox is buffered in the projected CRS and only then converted to lon/lat, so the buffer is
-    a real distance rather than a number of degrees that would shrink with latitude.
+    The bbox is buffered in the projected CRS and only then converted to lon/lat, so the buffer is a
+    real distance rather than a number of degrees that shrinks with latitude.
     """
     cdir = outdir / "osm_chunks"
     cdir.mkdir(parents=True, exist_ok=True)
@@ -581,11 +459,6 @@ def write_osm_chunks(
     return n_chunks
 
 
-def write_summary(outdir: Path, lines: list[str]) -> None:
-    (outdir / "plan_summary.txt").write_text("\n".join(lines) + "\n")
-    print("\n".join(lines))
-
-
 def human_bytes(n: float) -> str:
     for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
         if abs(n) < 1024 or unit == "PiB":
@@ -601,18 +474,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     ap.add_argument("--tiles-csv", type=Path, required=True)
     ap.add_argument("--outdir", type=Path, default=Path("."))
-    ap.add_argument(
-        "--grid-size",
-        type=int,
-        required=True,
-        help="core tiles per grid edge; a pure efficiency knob (see module docstring)",
-    )
-    ap.add_argument(
-        "--halo-m",
-        type=float,
-        default=127.0,
-        help="neighbour distance a render needs; 127 is karttapullautin's hard-coded value",
-    )
+    ap.add_argument("--grid-size", type=int, required=True, help="core tiles per grid edge")
     ap.add_argument("--base-zoom", type=int, default=12)
     ap.add_argument("--osm-buffer-m", type=float, default=2000.0)
     ap.add_argument("--osm-chunk-size", type=int, default=32)
@@ -622,50 +484,23 @@ def main(argv: list[str] | None = None) -> int:
         default="lonlat",
         help="'lonlat' (default) or an EPSG string, meaning --bbox is in the tiles' own CRS",
     )
-    ap.add_argument("--tile-regex", help="keep only tiles whose name matches")
-    ap.add_argument(
-        "--min-laz-bytes",
-        type=int,
-        default=0,
-        help="skip tiles smaller than this; near-empty laz files are the likeliest trigger of "
-        "the karttapullautin crash this pipeline has to survive",
-    )
-    ap.add_argument(
-        "--schema",
-        type=Path,
-        help="also validate every row against this JSON schema (assets/schema_tiles.json)",
-    )
     args = ap.parse_args(argv)
 
     if args.grid_size < 1:
         raise PlanError("--grid-size must be >= 1")
-    if args.halo_m < 0:
-        raise PlanError("--halo-m must be >= 0")
-
-    if args.schema:
-        validate_against_schema(args.tiles_csv, args.schema)
 
     all_tiles = read_tiles(args.tiles_csv)
     derive_lonlat(all_tiles)
 
     bbox = parse_bbox(args.bbox) if args.bbox else None
-    tiles, dropped, too_small = select_tiles(
-        all_tiles,
-        bbox=bbox,
-        bbox_crs=args.bbox_crs,
-        tile_regex=args.tile_regex,
-        min_laz_bytes=args.min_laz_bytes,
-    )
-    # Only the *selection* has to be single-CRS. Checking it here rather than on the whole file
-    # means a multi-zone national dataset can still be processed one zone at a time, which is what
-    # require_single_crs()'s error message tells the user to do.
+    tiles, dropped = select_tiles(all_tiles, bbox=bbox, bbox_crs=args.bbox_crs)
+    # Only the *selection* has to be single-CRS, so a multi-zone national dataset can be processed
+    # one zone at a time -- which is what require_single_crs()'s error message tells the user to do.
     crs = require_single_crs(tiles)
     halo_pool = [t for t in all_tiles if t.crs == crs]
 
     tile_w, tile_h, uniform = infer_tile_size(tiles)
-    grids = build_grids(
-        tiles, halo_pool, crs=crs, grid_size=args.grid_size, halo_m=args.halo_m
-    )
+    grids = build_grids(tiles, halo_pool, crs=crs, grid_size=args.grid_size)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     write_grid_csvs(args.outdir, grids)
@@ -688,8 +523,7 @@ def main(argv: list[str] | None = None) -> int:
     per_grid_bytes = [
         sum(t.size_bytes for t in parts["core"] + parts["halo"]) for parts in grids.values()
     ]
-    # Distinct files touched, i.e. what a perfect cache would fetch. Halo-only tiles outside the
-    # selected region are counted here but never rendered.
+    # Distinct files touched, i.e. what a perfect cache would fetch.
     distinct = {t.tile: t for parts in grids.values() for t in parts["core"] + parts["halo"]}
     distinct_bytes = sum(t.size_bytes for t in distinct.values())
     halo_only = len(distinct) - len(tiles)
@@ -701,22 +535,12 @@ def main(argv: list[str] | None = None) -> int:
         f"CRS                  {crs}",
         f"lattice cell         {tile_w:g} x {tile_h:g} {crs} units"
         + ("" if uniform else "  (INFERRED, sizes are not uniform)"),
-        f"halo distance        {args.halo_m:g} units "
-        f"({args.halo_m / tile_w:.2f} cells wide -- {'1 ring suffices' if args.halo_m <= tile_w else 'MORE THAN ONE RING'})",
         "",
         f"tiles in CSV         {len(all_tiles):,}",
         f"rendered (core)      {len(tiles):,}"
         + (f"  (filter dropped {len(dropped):,})" if dropped else ""),
-        f"halo only            {halo_only:,}  (fetched for their points, never rendered; "
-        f"drawn from the whole CSV so a filtered region renders identically to a full run)",
-    ]
-    if too_small:
-        lines.append(
-            f"skipped as too small {len(too_small):,}  (< {human_bytes(args.min_laz_bytes)}): "
-            + ", ".join(t.tile for t in too_small[:10])
-            + (" ..." if len(too_small) > 10 else "")
-        )
-    lines += [
+        f"halo only            {halo_only:,}  (fetched for their points, never rendered; drawn "
+        f"from the whole CSV so a filtered region renders identically to a full run)",
         "",
         f"grids                {len(grids):,}  (grid_size={args.grid_size})",
         f"  core tiles/grid    min {min(len(p['core']) for p in grids.values())}, "
@@ -740,7 +564,8 @@ def main(argv: list[str] | None = None) -> int:
         f"osmium passes        {n_chunks} (chunk size {args.osm_chunk_size}, "
         f"buffer {args.osm_buffer_m:g} {crs} units)",
     ]
-    write_summary(args.outdir, lines)
+    (args.outdir / "plan_summary.txt").write_text("\n".join(lines) + "\n")
+    print("\n".join(lines))
     return 0
 
 

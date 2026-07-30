@@ -1,0 +1,3 @@
+# Stands in for an unused optional Nextflow input: Nextflow cannot stage a path that does not exist,
+# so an absent optional input is this file, and a module tests the staged name to tell the cases
+# apart. One file serves all three optional inputs because stageAs renames two of them on arrival.

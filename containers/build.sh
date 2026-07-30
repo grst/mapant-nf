@@ -7,8 +7,8 @@
 #   REGISTRY=ghcr.io/you containers/build.sh --push
 #   containers/build.sh --manifest       # print names/tags/build-args as JSON (used by CI)
 #
-# The image names and tags produced here are the defaults in conf/containers.config; override
-# `params.container_*` there (or on the command line) to point the pipeline somewhere else.
+# `-profile local_images` points the pipeline at the images produced here; conf/containers.config has
+# the published ones.
 #
 # ---------------------------------------------------------------------------
 # Why the Containerfiles look the way they do
@@ -147,9 +147,9 @@ for name in "${images[@]}"; do
         args+=(--build-arg "${BUILD_ARGS[$name]}")
     fi
 
-    # Tagged twice: the version, and `latest`. The second is what nextflow.config's `local_images`
-    # profile points at, so that switching the pipeline to locally built images needs no knowledge of
-    # which upstream release they were built from.
+    # Tagged twice: the version, and `latest`. `latest` is what nextflow.config's `local_images`
+    # profile points at, so switching to locally built images needs no knowledge of which upstream
+    # release they came from.
     tags=(-t "$ref")
     latest_ref="${REGISTRY}/${name}:latest"
     if [ "$ref" != "$latest_ref" ]; then

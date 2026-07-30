@@ -80,17 +80,6 @@
                     "type": "string",
                     "default": "lonlat",
                     "description": "CRS of region_bbox: 'lonlat', or an EPSG string meaning the tiles' own CRS."
-                },
-                "region_tile_regex": {
-                    "type": "string",
-                    "description": "Only render tiles whose filename matches this regular expression."
-                },
-                "min_laz_bytes": {
-                    "type": "integer",
-                    "default": 0,
-                    "minimum": 0,
-                    "description": "Skip rendering tiles smaller than this many bytes (0 disables).",
-                    "help_text": "Near-empty LiDAR files are the likeliest trigger of the karttapullautin crash this pipeline is built to survive. Excluded tiles are still used as neighbours, so their absence does not degrade the tiles around them."
                 }
             }
         },
@@ -102,15 +91,8 @@
                     "type": "integer",
                     "default": 10,
                     "minimum": 1,
-                    "description": "Tiles per grid edge. A download/disk trade-off, not a quality setting.",
-                    "help_text": "karttapullautin renders each tile from its neighbours within pullauta_halo_m and crops back to the tile, so a tile's output is identical whatever grid it was batched into. Larger grids re-fetch proportionally fewer halo tiles (2.8x at 3, 1.44x at 10, 1.27x at 16) but need proportionally more disk per concurrent task -- roughly (grid_size+2)^2 tiles plus karttapullautin's temporaries."
-                },
-                "pullauta_halo_m": {
-                    "type": "number",
-                    "default": 127,
-                    "minimum": 0,
-                    "description": "Distance from which neighbouring points are needed for an artifact-free render.",
-                    "help_text": "127 m is hard-coded in karttapullautin v2 (src/process.rs). Do not lower it: doing so drops neighbours the renderer will still look for, producing seams. Raising it only wastes downloads."
+                    "description": "Tiles per grid edge; a download/disk trade-off.",
+                    "help_text": "Each grid is rendered with one ring of neighbouring tiles around it, which is what karttapullautin's 127 m halo needs. Larger grids re-fetch proportionally fewer ring tiles (2.8x at 3, 1.44x at 10, 1.27x at 16) but need proportionally more disk per concurrent task -- roughly (grid_size+2)^2 tiles plus karttapullautin's temporaries."
                 },
                 "pullauta_processes": {
                     "type": "integer",
@@ -132,12 +114,6 @@
                     "enum": ["depr", "plain"],
                     "description": "Which karttapullautin render to tile: with ('depr') or without depression markings.",
                     "help_text": "Keeping only one halves the intermediate storage of a large run (~90 GB rather than ~175 GB for Bavaria)."
-                },
-                "scratch": {
-                    "type": ["boolean", "string"],
-                    "default": false,
-                    "description": "Nextflow scratch directive for the rendering process.",
-                    "help_text": "Off by default. `true` does work under podman but places the task directory on the container's own filesystem, which is the wrong place for tens of gigabytes of LiDAR. The rendering process removes its temporaries either way, so the work directory keeps only the finished PNGs. Turn this on when the node has a fast local disk the work directory is not already on."
                 }
             }
         },
@@ -147,7 +123,7 @@
             "properties": {
                 "download_jobs": {
                     "type": "integer",
-                    "default": 2,
+                    "default": 4,
                     "minimum": 1,
                     "description": "Parallel downloads per grid.",
                     "help_text": "Multiplied by the number of concurrent grids and by the number of nodes, this is how hard the pipeline hits the data provider. Open-data servers are usually not built for it; keep it modest and consider download_limit_rate."
@@ -200,8 +176,8 @@
                     "default": 11,
                     "minimum": 0,
                     "maximum": 22,
-                    "description": "Zoom level at which tiling is parallelised.",
-                    "help_text": "One task per base-zoom tile, each holding every source render overlapping it in memory: about 1.1 GB at z12 for 0.42 m/px sources, a quarter of that per level higher. Raise it on a memory-constrained machine."
+                    "description": "Shallowest zoom level of the pyramid, and the unit tiling is parallelised over.",
+                    "help_text": "One task per base-zoom tile, each holding every source render overlapping it in memory: about 1.1 GB at z12 for 0.42 m/px sources, a quarter of that per level higher. Raise it on a memory-constrained machine. Nothing is generated below it -- the viewer shows OSM's own tiles there instead."
                 },
                 "max_zoom": {
                     "type": "integer",
@@ -210,59 +186,6 @@
                     "maximum": 22,
                     "description": "Deepest zoom level to generate.",
                     "help_text": "z18 is about 0.4 m/px at central-European latitudes, which matches karttapullautin's 0.4233 m/px output. Each extra level quadruples the file count: ~8.8 M tiles for Bavaria at z18 against ~2.2 M at z17."
-                },
-                "min_zoom": {
-                    "type": "integer",
-                    "default": 8,
-                    "minimum": 0,
-                    "maximum": 22,
-                    "description": "Shallowest zoom level, built by halving the base-zoom tiles.",
-                    "help_text": "Set equal to base_zoom to skip overviews, but note that a pyramid which starts at z12 cannot be zoomed out to a regional view."
-                }
-            }
-        },
-        "validation": {
-            "title": "Input validation",
-            "type": "object",
-            "properties": {
-                "validate_tiles": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Validate every row of the tiles CSV against assets/schema_tiles.json before starting.",
-                    "help_text": "About 18 s for Bavaria's 72,000 rows -- cheap next to what an invalid row costs three processes later."
-                },
-                "validate_tiles_in_python": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Validate the tiles CSV inside PLAN_GRIDS instead of in the workflow.",
-                    "help_text": "An escape hatch for CSVs large enough that validating in Nextflow is slow. It uses the same schema file, so the contract has only one definition either way."
-                }
-            }
-        },
-        "containers": {
-            "title": "Container images",
-            "description": "Built locally by containers/build.sh; override to pull from a registry instead.",
-            "type": "object",
-            "properties": {
-                "container_karttapullautin": {
-                    "type": "string",
-                    "default": "mapant/karttapullautin:2.13.0",
-                    "description": "Image with the three ISA builds of karttapullautin plus curl and coreutils."
-                },
-                "container_gdal": {
-                    "type": "string",
-                    "default": "mapant/gdal:latest",
-                    "description": "Image with ogr2ogr (OSM driver required) and zip."
-                },
-                "container_osmium": {
-                    "type": "string",
-                    "default": "mapant/osmium:latest",
-                    "description": "Image with osmium-tool."
-                },
-                "container_k2t": {
-                    "type": "string",
-                    "default": "mapant/k2t:latest",
-                    "description": "Image with karttapullautin2tiles; doubles as the Python image for bin/*.py."
                 }
             }
         }
@@ -273,8 +196,6 @@
         { "$ref": "#/$defs/grids" },
         { "$ref": "#/$defs/download" },
         { "$ref": "#/$defs/osm" },
-        { "$ref": "#/$defs/tiles" },
-        { "$ref": "#/$defs/validation" },
-        { "$ref": "#/$defs/containers" }
+        { "$ref": "#/$defs/tiles" }
     ]
 }

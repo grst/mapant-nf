@@ -25,7 +25,6 @@ readonly WORK="${SCRATCH}/work"
 # change to the profile shows up as a failing assertion instead of silently weakening the test.
 readonly EXPECT_GRIDS=2
 readonly BASE_ZOOM=13
-readonly MIN_ZOOM=9
 
 cd "$REPO"
 rm -rf "$SCRATCH"
@@ -88,15 +87,19 @@ fi
 check 'more than one parent tile was produced' \
     test "$(wc -l < "${SCRATCH}/published_parents")" -gt 1
 
-# MAKE_TILES writes the base zoom and one level below it; TILE_OVERVIEWS reduces from the base zoom
-# down to min_zoom. A gap in that range means one of the two is not being reached.
-echo '==> the pyramid covers every zoom level it claims to'
-for z in $(seq "$MIN_ZOOM" "$((BASE_ZOOM + 1))"); do
+# The pyramid starts at the base zoom -- nothing below it is generated. The stub writes the base zoom
+# and one level under it, so both must be published and no shallower level may appear.
+echo '==> the pyramid starts at the base zoom'
+for z in "$BASE_ZOOM" "$((BASE_ZOOM + 1))"; do
     check "zoom ${z} is present" test -d "${OUT}/tiles/${z}"
 done
+check 'nothing was published below the base zoom' \
+    test ! -d "${OUT}/tiles/$((BASE_ZOOM - 1))"
 check 'the viewer was published' test -s "${OUT}/tiles/index.html"
-check 'the viewer knows the zoom range' \
-    grep -q "maxZoom" "${OUT}/tiles/index.html"
+check 'the viewer starts the pyramid at the base zoom' \
+    grep -q "minZoom: ${BASE_ZOOM}" "${OUT}/tiles/index.html"
+check 'the viewer falls back to OSM below it' \
+    grep -q 'tile.openstreetmap.org' "${OUT}/tiles/index.html"
 
 echo '==> QC reporting'
 # Header-only: a stub run has no failures, and a QC file that is empty rather than header-only means

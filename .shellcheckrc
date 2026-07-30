@@ -1,17 +1,16 @@
-# shellcheck configuration for bin/, tests/, containers/ and scripts/.
+# shellcheck configuration for tests/, containers/ and scripts/.
 #
 # Everything not listed here is a hard failure in CI, including the checks that catch the bugs that
-# actually bite in this pipeline: unquoted expansions (SC2086), `trap` bodies quoted so they expand
-# at trap time rather than at definition time (SC2064), and misused test operators.
+# actually bite in this pipeline: unquoted expansions (SC2086), `trap` bodies quoted so they expand at
+# trap time rather than at definition time (SC2064), and misused test operators.
 #
-# The four disabled below are style opinions this repository declines, not defects:
+# The three disabled below are style opinions this repository declines, not defects:
 #
-#   SC2155  "declare and assign separately". Applies to `readonly X="$(cmd)"`, which loses cmd's
-#           exit status. Every use here is a path or a version string under `set -e` where the
-#           command cannot meaningfully fail, and splitting them would cost the `readonly`.
-#   SC2016  "expressions don't expand in single quotes". Every hit is deliberate: error messages
-#           that quote a shell command or a Rust panic string containing backticks.
-#   SC2011  ls | xargs. Used on globs of our own generated filenames (`<tile>_depr.pgw`), which are
-#           constrained by assets/schema_tiles.json to [A-Za-z0-9_.-].
-#   SC2012  ls | wc -l, same reasoning, in a test stub that imitates karttapullautin's own output.
-disable=SC2155,SC2016,SC2011,SC2012
+#   SC2155  "declare and assign separately". Applies to `readonly X="$(cmd)"`, which loses cmd's exit
+#           status. Every use here is a path or a version string under `set -e` where the command
+#           cannot meaningfully fail, and splitting them would cost the `readonly`.
+#   SC2016  "expressions don't expand in single quotes". Every hit is deliberate: messages that quote
+#           a shell command or a Rust panic string containing backticks.
+#   SC2012  ls | wc -l. Used in a test stub, on globs of our own generated filenames, which
+#           assets/schema_tiles.json constrains to [A-Za-z0-9_.-].
+disable=SC2155,SC2016,SC2012

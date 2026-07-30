@@ -62,9 +62,10 @@ check 'ps is present (nextflow task metrics)' run bash -c 'command -v ps'
 case "$NAME" in
     karttapullautin)
         # The pipeline does download, checksum verification, rendering and cleanup in one process, so
-        # this image needs the download tooling as much as the renderer.
+        # this image needs curl and the Python that drives them as much as the renderer.
         check 'curl is present' run bash -c 'command -v curl'
-        check 'sha256sum is present' run bash -c 'command -v sha256sum'
+        check 'python3 runs bin/*.py' \
+            run python3 -c 'import configparser, csv, hashlib, subprocess; print("stdlib ok")'
         check 'RUST_BACKTRACE is set (panic reports are useless without it)' \
             run bash -c '[ "${RUST_BACKTRACE:-0}" = 1 ]'
 
@@ -126,12 +127,10 @@ case "$NAME" in
         check 'k2t runs' run k2t --help
         check 'make-tiles is available' run k2t make-tiles --help
         # rasterio's wheel links libexpat but does not vendor it, and python:slim does not have it.
-        # Importing is the only way to find out; pip install reports success either way.
+        # Importing is the only way to find out; pip install reports success either way. This image is
+        # also the generic Python image, so these are what bin/*.py needs too.
         check 'the geo stack imports' \
-            run python -c 'import karttapullautin2tiles, geopandas, shapely, pyproj, mercantile, rasterio, PIL, jsonschema'
-        # This image is also the generic Python image, so it has to be able to run bin/*.py.
-        check 'jsonschema is present for the samplesheet contract' \
-            run python -c 'import jsonschema; print(jsonschema.__version__)'
+            run python -c 'import karttapullautin2tiles, geopandas, shapely, pyproj, mercantile, rasterio, PIL'
         ;;
 
     *)

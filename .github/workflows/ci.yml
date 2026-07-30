@@ -1,8 +1,8 @@
 name: tests
 
-# On every pull request and on every push to main. The four jobs are split by what they need rather
+# On every pull request and on every push to main. The three jobs are split by what they need rather
 # than by what they cover, so a failure names its own cause: lint needs nothing, unit needs Python,
-# scripts need only bash, wiring needs both Nextflow and Python.
+# wiring needs both Nextflow and Python.
 #
 # What CI deliberately does not run: anything that renders a pixel. That needs the ~52 GB of LiDAR in
 # testdata/ (tests/test_grid_independence.sh, tests/test_failure_injection.sh, -profile test_local) or
@@ -41,10 +41,8 @@ jobs:
       - name: profiles resolve and derived settings track their params
         run: tests/test_config_profiles.sh
 
-      # The scripts in bin/ do the work that cannot be expressed in a process body -- retrying
-      # downloads, verifying checksums, recovering from a renderer that panics -- so they are where an
-      # unquoted expansion does real damage. .shellcheckrc lists the four style checks this repository
-      # declines and why; everything else is a hard failure.
+      # .shellcheckrc lists the four style checks this repository declines and why; everything else is
+      # a hard failure.
       - name: shellcheck
         run: |
           set -euo pipefail
@@ -52,8 +50,7 @@ jobs:
           shellcheck --version
           # The two without a .sh suffix are shell too: a test double for the renderer, and the ISA
           # dispatch wrapper that decides which binary every render in production runs.
-          shellcheck bin/*.sh \
-                     tests/*.sh \
+          shellcheck tests/*.sh \
                      tests/stub_pullauta \
                      containers/*.sh \
                      containers/karttapullautin/pullauta \
@@ -75,22 +72,13 @@ jobs:
 
       - run: pip install -r tests/requirements.txt
 
-      # All of the pipeline's geometry -- halo resolution, the grid lattice, lon/lat envelopes, the
-      # tile-to-parent map, the samplesheet contract -- lives in bin/plan_grids.py precisely so it can
-      # be tested here, without a container or a byte of LiDAR.
+      # Two things are tested here, both without a container or a byte of LiDAR: the pipeline's
+      # geometry (halo, grid lattice, lon/lat envelopes, tile-to-parent map, samplesheet contract),
+      # which lives in bin/plan_grids.py for exactly that reason; and the crash-recovery ladder in
+      # bin/run_pullauta.py, driven against tests/stub_pullauta. The latter is the requirement easiest
+      # to believe you have implemented without ever exercising it, because the tile that triggers the
+      # upstream bug is by definition one you do not have.
       - run: pytest tests/ -v
-
-  scripts:
-    name: script tests
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      # "A tile that makes karttapullautin panic must not stop the run, and must be reported" is the
-      # requirement easiest to believe you have implemented without ever exercising it: the offending
-      # tile is by definition one you do not have. tests/stub_pullauta reproduces the failure
-      # behaviour, so the recovery ladder is tested with no renderer and no data.
-      - run: tests/test_run_pullauta_recovery.sh
 
   wiring:
     name: stub run

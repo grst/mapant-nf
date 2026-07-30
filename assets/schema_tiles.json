@@ -22,7 +22,7 @@
             "size_bytes": {
                 "type": "integer",
                 "minimum": 1,
-                "errorMessage": "`size_bytes` must be a positive integer. It is checked against the server's Content-Length before the (much more expensive) sha256 pass, so a wrong value here costs a redundant download."
+                "errorMessage": "`size_bytes` must be a positive integer. The downloaded file's size is checked against it before the (much more expensive) sha256 pass, so a wrong value here costs a redundant download."
             },
             "sha256": {
                 "type": "string",
@@ -49,38 +49,8 @@
             "max_y": {
                 "type": "number",
                 "errorMessage": "`max_y` must be a number in the units of `crs`, greater than `min_y`."
-            },
-            "min_lon": {
-                "type": "number",
-                "minimum": -180,
-                "maximum": 180,
-                "errorMessage": "`min_lon` is optional; when absent it is derived from the projected bbox with pyproj. If present it must be a WGS84 longitude."
-            },
-            "min_lat": {
-                "type": "number",
-                "minimum": -90,
-                "maximum": 90,
-                "errorMessage": "`min_lat` is optional; when absent it is derived from the projected bbox with pyproj. If present it must be a WGS84 latitude."
-            },
-            "max_lon": {
-                "type": "number",
-                "minimum": -180,
-                "maximum": 180,
-                "errorMessage": "`max_lon` is optional; when absent it is derived from the projected bbox with pyproj. If present it must be a WGS84 longitude."
-            },
-            "max_lat": {
-                "type": "number",
-                "minimum": -90,
-                "maximum": 90,
-                "errorMessage": "`max_lat` is optional; when absent it is derived from the projected bbox with pyproj. If present it must be a WGS84 latitude."
             }
         },
-        "required": ["tile", "url", "size_bytes", "sha256", "crs", "min_x", "min_y", "max_x", "max_y"],
-        "dependentRequired": {
-            "min_lon": ["min_lat", "max_lon", "max_lat"],
-            "min_lat": ["min_lon", "max_lon", "max_lat"],
-            "max_lon": ["min_lon", "min_lat", "max_lat"],
-            "max_lat": ["min_lon", "min_lat", "max_lon"]
-        }
+        "required": ["tile", "url", "size_bytes", "sha256", "crs", "min_x", "min_y", "max_x", "max_y"]
     }
 }

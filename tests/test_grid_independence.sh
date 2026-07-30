@@ -78,6 +78,7 @@ That would mean a tile's output depends on its batch, i.e. the map has seams at 
 params.grid_size cannot be tuned freely. Check first:
   * that both runs really used the same ISA build (grep 'ISA variant' in the qc logs),
   * that the halo in both runs contains the same files (the grid_*.csv files under each work dir),
-  * whether karttapullautin's 127 m constant changed (params.pullauta_halo_m must be >= it).
+  * whether karttapullautin's 127 m constant grew beyond one tile width, which would mean one ring of
+    neighbours is no longer enough.
 EOF
 exit 1

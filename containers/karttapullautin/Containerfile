@@ -13,9 +13,9 @@
 # cargo treat this as a cross-compile, so RUSTFLAGS reaches only the target artifacts and build
 # scripts stay baseline. That is what lets an AVX2-only laptop build the AVX-512 binary at all.
 #
-# Runtime deps look unrelated to rendering, and are not: prompt.md requires that download,
-# checksum verification, rendering and cleanup all happen inside a *single* process, so curl and
-# coreutils have to live in this image alongside pullauta.
+# Runtime deps look unrelated to rendering, and are not: download, checksum verification, rendering
+# and cleanup all happen inside a *single* process, so curl and the Python that drives bin/*.py have
+# to live in this image alongside pullauta.
 FROM docker.io/library/rust:1.88-bookworm AS build
 
 ARG PULLAUTA_REPO=https://github.com/karttapullautin/karttapullautin
@@ -53,12 +53,14 @@ FROM docker.io/library/debian:stable-slim
 #
 # procps is not optional: Nextflow shells out to `ps` to collect task metrics and fails the task
 # with "Command 'ps' required by nextflow to collect task metrics cannot be found" without it.
+# python3 runs bin/fetch_laz.py and bin/run_pullauta.py; both are standard library only, so there is
+# nothing to pin here.
 RUN apt-get -o APT::Sandbox::User=root update \
  && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
       ca-certificates \
-      coreutils \
       curl \
       procps \
+      python3 \
  && rm -rf /var/lib/apt/lists/*
 
 ARG CARGO_TARGET=x86_64-unknown-linux-gnu

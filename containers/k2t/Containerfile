@@ -30,21 +30,12 @@ RUN apt-get -o APT::Sandbox::User=root update \
       procps \
  && rm -rf /var/lib/apt/lists/*
 
-# jsonschema is not a k2t dependency; it is here so bin/plan_grids.py can validate the tiles CSV
-# against assets/schema_tiles.json itself when the row count makes doing it in Nextflow too slow.
-# Same schema file either way, so there is only ever one definition of the contract. The version
-# matches tests/requirements.txt, so the samplesheet contract is enforced by the same library in CI
-# and in a run.
-#
-# Only the direct dependencies are pinned. What k2t resolves geopandas/rasterio/pyproj to is not,
+# Only the direct dependency is pinned. What k2t resolves geopandas/rasterio/pyproj to is not,
 # because pinning those means maintaining a lock file for a transitive graph this repository does not
 # own -- so two builds of the same ctx- hash can still differ in a transitive version.
-ARG JSONSCHEMA_VERSION=4.26.0
-
 RUN pip install --no-cache-dir \
       "karttapullautin2tiles${K2T_VERSION:+==${K2T_VERSION}}" \
-      "jsonschema==${JSONSCHEMA_VERSION}" \
- && python -c "import karttapullautin2tiles, geopandas, shapely, pyproj, mercantile, rasterio, PIL, jsonschema; \
+ && python -c "import karttapullautin2tiles, geopandas, shapely, pyproj, mercantile, rasterio, PIL; \
 print('k2t', karttapullautin2tiles.__version__)" \
  && k2t --help > /dev/null
 

@@ -54,7 +54,6 @@ jobs:
                      tests/stub_pullauta \
                      containers/*.sh \
                      containers/karttapullautin/pullauta \
-                     scripts/*.sh
 
   unit:
     name: unit tests

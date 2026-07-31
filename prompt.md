@@ -93,6 +93,10 @@ Simplifications (2)
 -------------------
  * no "tile overviews". In the viewer, just show OSM mapnik at lower zoom levels. 
  
+Simplifications (3)
+-------------------
+ * the nextflow output log is too verbose -- don't print the name of every single tile generated.
+ 
 ---
 
 k2t optimizations

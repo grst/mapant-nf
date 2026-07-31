@@ -107,6 +107,11 @@ unpacked once per grid and scanned a hundred times.
 - **No `$projectDir` inside a process body**: on an executor without a shared filesystem that path
   does not exist. Stage the file as an input instead. The same rule rules out bind mounts and any
   host-absolute path in committed config.
+- **The end-of-run `Outputs:` listing prints each channel item in full**, capping the *number of
+  items* (ten, once there are more than twenty) but not their size. A published item that is a list
+  of a task's files therefore prints every one of them: `MAKE_TILES.out.tiles` is a whole z11..z18
+  subtree, ~22,000 paths per task. `main.nf` flattens the tiles channel before publishing so the cap
+  applies per file; it is not a no-op, and removing it puts megabytes of tile names on the console.
 - **Never assert on Nextflow's console output.** The end-of-run summary is written by whichever log
   observer is active: ANSI in a terminal, plain in CI, and a third `[SUCCESS] completed=… cached=…`
   format when `NXF_AGENT_MODE`, `AGENT` or `CLAUDECODE` is set — which is why a test can be green in

@@ -22,6 +22,7 @@ results*/
 # and `git add -A` without this line commits all of it. The small CSVs derived from it live in
 # tests/fixtures/ and those *are* tracked.
 testdata/
+test_*
 
 # karttapullautin writes these into its working directory and never cleans them up, so they should
 # only ever appear here if something was run by hand at the repo root.

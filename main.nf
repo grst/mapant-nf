@@ -169,7 +169,12 @@ workflow {
     publish:
     // Each MAKE_TILES task owns a disjoint subtree of the pyramid, so publishing them all into one
     // directory is a plain union with no possibility of a collision.
-    tiles = MAKE_TILES.out.tiles.mix(TILE_VIEWER.out.viewer)
+    //
+    // flatten() is for the end-of-run "Outputs:" summary, not for the publishing: Nextflow caps that
+    // listing at ten *channel items* but prints each item whole, and one MAKE_TILES item is the
+    // ~22,000 PNGs of a full z11..z18 subtree. Ten of those is megabytes of tile names on the
+    // console. One path per item makes the cap bite. Same files, same paths, same union.
+    tiles = MAKE_TILES.out.tiles.flatten().mix(TILE_VIEWER.out.viewer)
     qc = ch_render_failures.mix(ch_download_failures, PULLAUTA_GRID.out.log)
     plan = PLAN_GRIDS.out.summary.mix(
         PLAN_GRIDS.out.grid_index,

@@ -70,7 +70,7 @@ rendered="$(find "${SCRATCH}/work" -name '*_depr.pgw' -printf '%f\n' 2> /dev/nul
 check 'the three intact tiles rendered' '608_5284 608_5285 609_5284 ' "$rendered"
 
 check 'tiles were published' yes \
-    "$([ "$(find "${SCRATCH}/out/tiles" -name '*.png' 2> /dev/null | wc -l)" -gt 0 ] && echo yes || echo no)"
+    "$([ "$(find "${SCRATCH}/out/tiles" -name '*.webp' 2> /dev/null | wc -l)" -gt 0 ] && echo yes || echo no)"
 
 dl="${SCRATCH}/out/qc/download_failures.tsv"
 check 'one download failure recorded' 1 "$(tail -n +2 "$dl" 2> /dev/null | wc -l)"

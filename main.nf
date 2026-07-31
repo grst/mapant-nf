@@ -3,8 +3,8 @@
  * mapant -- generate a web-mercator map pyramid from a list of LiDAR tiles.
  *
  * Give it a CSV of laz tiles (url, checksum, bbox, CRS), an OSM extract and a karttapullautin
- * configuration, and it produces a z/x/y directory of PNG tiles. Nothing here is specific to
- * Bavaria; the input contract is assets/schema_tiles.json.
+ * configuration, and it produces a z/x/y directory of lossless WebP (or PNG) tiles. Nothing here is
+ * specific to Bavaria; the input contract is assets/schema_tiles.json.
  *
  * See README.md for the design, and each run's published plan_summary.txt for its own numbers.
  */
@@ -172,7 +172,7 @@ workflow {
     //
     // flatten() is for the end-of-run "Outputs:" summary, not for the publishing: Nextflow caps that
     // listing at ten *channel items* but prints each item whole, and one MAKE_TILES item is the
-    // ~22,000 PNGs of a full z11..z18 subtree. Ten of those is megabytes of tile names on the
+    // ~22,000 tiles of a full z11..z18 subtree. Ten of those is megabytes of tile names on the
     // console. One path per item makes the cap bite. Same files, same paths, same union.
     tiles = MAKE_TILES.out.tiles.flatten().mix(TILE_VIEWER.out.viewer)
     qc = ch_render_failures.mix(ch_download_failures, PULLAUTA_GRID.out.log)
@@ -184,8 +184,8 @@ workflow {
 }
 
 output {
-    // path '.' keeps each file's task-relative path, so 'tiles/12/2145/1423.png' lands at
-    // <outputDir>/tiles/12/2145/1423.png and the pyramid assembles itself from many tasks.
+    // path '.' keeps each file's task-relative path, so 'tiles/12/2145/1423.webp' lands at
+    // <outputDir>/tiles/12/2145/1423.webp and the pyramid assembles itself from many tasks.
     tiles {
         path '.'
         mode params.publish_mode

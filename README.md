@@ -3,7 +3,7 @@
 [![tests](https://github.com/grst/mapant-nf/actions/workflows/ci.yml/badge.svg)](https://github.com/grst/mapant-nf/actions/workflows/ci.yml)
 [![containers](https://github.com/grst/mapant-nf/actions/workflows/containers.yml/badge.svg)](https://github.com/grst/mapant-nf/actions/workflows/containers.yml)
 
-A Nextflow pipeline that turns a list of LiDAR tiles into a web-mercator PNG tile pyramid —
+A Nextflow pipeline that turns a list of LiDAR tiles into a web-mercator raster tile pyramid —
 an automatically generated orienteering map, in the style of
 [mapant.fi](https://mapant.fi). Built to produce a map of all of Bavaria from ~15 TB of open
 LiDAR data, but nothing in it is Bavaria-specific: the input is a CSV satisfying
@@ -19,7 +19,7 @@ tiles.csv ──► PLAN_GRIDS ──┬─► grids/<grid_id>.csv    (which til
                                              │
                     PULLAUTA_GRID  ◄──────────┘   download → verify → render → delete
                             │
-                    MAKE_TILES ──► tiles/{z}/{x}/{y}.png + index.html
+                    MAKE_TILES ──► tiles/{z}/{x}/{y}.webp + index.html
 ```
 
 It builds on [karttapullautin](https://github.com/karttapullautin/karttapullautin) for the
@@ -219,6 +219,16 @@ One task per base-zoom tile bounds memory (k2t holds every overlapping source re
 ~1.1 GB at z12 for 0.42 m/px sources). Because k2t's per-parent subtrees are disjoint, publishing
 many tasks into one pyramid is a plain union.
 
+Tiles are **lossless WebP**, k2t's default since 0.2.0 — pixel-identical to the PNG it used to write
+and 23% smaller: measured by tiling one `test_local` render both ways, 255 tiles that decode to the
+same bytes at 4.94 MB against 6.42 MB. At Bavaria's ~8.8 M tiles that is tens of gigabytes of storage
+and of egress. `--tile_format png` switches back for a consumer that cannot
+read WebP. The pipeline passes `--format` explicitly rather than inheriting k2t's default, because
+the extension is hardcoded in two places downstream — the process's output glob and the viewer's tile
+URL — and a default that moves under them publishes nothing rather than failing. k2t's
+`--webp-method` is left at its default of 2: 3 costs 2.3× the encode time for another 3%, and tiling
+is already an hour of the run.
+
 The pyramid spans `base_zoom` to `max_zoom` and nothing shallower: below the base zoom the generated
 viewer shows OSM's own raster tiles. Generating overview levels would mean a reduction step over every
 finished tile — a barrier at the end of the run — to produce a handful of images that say less than
@@ -339,7 +349,7 @@ The first four rows run in CI on every pull request and every push to `main`
 | Command | What it establishes | Time | CI |
 | --- | --- | --- | --- |
 | `pytest tests/` | planning geometry, the CSV schema, and crash recovery against a stub renderer — 37 tests | 4 s | ✅ |
-| `bash tests/test_stub_wiring.sh` | the whole DAG with fabricated outputs: joins, fan-in, nested publishing, `-resume` — 19 assertions | 1 min | ✅ |
+| `bash tests/test_stub_wiring.sh` | the whole DAG with fabricated outputs: joins, fan-in, nested publishing, `-resume` — 21 assertions | 1 min | ✅ |
 | `bash tests/test_config_profiles.sh` | every profile resolves and derived settings track their params | 30 s | ✅ |
 | `nextflow lint .` + `shellcheck` | strict-parser clean; scripts clean | 10 s | ✅ |
 | `nextflow run . -profile podman,test_local` | end to end, no network: 8 tiles, 2 grids, **no seam at the grid boundary**, `work/` left at 20 MB | ~15 min | |
@@ -394,7 +404,7 @@ your own and pass it with `-c`:
 ```groovy
 process {
     withName: 'PLAN_GRIDS|RENDER_INI|MAKE_TILES|TILE_VIEWER' {
-        container = 'ghcr.io/grst/mapant-nf/k2t:ctx-6033ed3b5add'
+        container = 'ghcr.io/grst/mapant-nf/k2t:ctx-0e00abf5c32c'
     }
 }
 ```

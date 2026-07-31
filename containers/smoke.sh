@@ -131,6 +131,10 @@ case "$NAME" in
         # also the generic Python image, so these are what bin/*.py needs too.
         check 'the geo stack imports' \
             run python -c 'import karttapullautin2tiles, geopandas, shapely, pyproj, mercantile, rasterio, PIL'
+        # The pyramid is lossless WebP, which Pillow can only write if its wheel bundled libwebp --
+        # another capability pip reports nothing about. Without it every MAKE_TILES task dies.
+        check 'Pillow can write WebP' \
+            run python -c 'from PIL import features; assert features.check("webp")'
         ;;
 
     *)

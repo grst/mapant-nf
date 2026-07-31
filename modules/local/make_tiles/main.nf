@@ -15,7 +15,7 @@ process MAKE_TILES {
     output:
     // Optional because k2t skips a parent whose sources turn out not to overlap it after
     // exact-geometry filtering; the tile->parent map is deliberately conservative.
-    path 'tiles/**/*.png', emit: tiles, optional: true
+    path "tiles/**/*.${params.tile_format}", emit: tiles, optional: true
 
     script:
     // k2t identifies a render by its .pgw sidecar; the default pattern selects the depression
@@ -27,10 +27,14 @@ process MAKE_TILES {
     # already computed the exact tile->parent mapping from the source bboxes.
     printf '{"x":%d,"y":%d,"z":%d}\\n' ${p.x} ${p.y} ${p.z} > tile.jsonl
 
+    # --format is passed explicitly rather than left to k2t's default: the output glob above and the
+    # viewer's tile URL both hardcode the extension, so an upstream change of default would publish
+    # nothing rather than fail. (0.2.0 moved that default from png to webp.)
     k2t make-tiles \\
         --proj ${p.crs} \\
         --pattern '${pattern}' \\
         --max-zoom ${params.max_zoom} \\
+        --format ${params.tile_format} \\
         --no-include-viewer \\
         . tiles tile.jsonl
     """
@@ -41,13 +45,13 @@ process MAKE_TILES {
     stub:
     """
     mkdir -p 'tiles/${p.z}/${p.x}'
-    : > 'tiles/${p.z}/${p.x}/${p.y}.png'
+    : > 'tiles/${p.z}/${p.x}/${p.y}.${params.tile_format}'
 
     if [ ${p.z} -lt ${params.max_zoom} ]; then
         for dx in 0 1; do
             for dy in 0 1; do
                 mkdir -p "tiles/\$((${p.z} + 1))/\$((${p.x} * 2 + dx))"
-                : > "tiles/\$((${p.z} + 1))/\$((${p.x} * 2 + dx))/\$((${p.y} * 2 + dy)).png"
+                : > "tiles/\$((${p.z} + 1))/\$((${p.x} * 2 + dx))/\$((${p.y} * 2 + dy)).${params.tile_format}"
             done
         done
     fi

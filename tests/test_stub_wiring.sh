@@ -25,6 +25,7 @@ readonly WORK="${SCRATCH}/work"
 # change to the profile shows up as a failing assertion instead of silently weakening the test.
 readonly EXPECT_GRIDS=2
 readonly BASE_ZOOM=13
+readonly TILE_FORMAT=webp
 
 cd "$REPO"
 rm -rf "$SCRATCH"
@@ -98,8 +99,8 @@ awk -F, 'NR > 1 { print $3 "/" $4 "/" $5 }' "${OUT}/pipeline_info/parent_tiles.c
 # unexplained exit.
 : > "${SCRATCH}/published_parents"
 if [ -d "${OUT}/tiles/${BASE_ZOOM}" ]; then
-    find "${OUT}/tiles/${BASE_ZOOM}" -name '*.png' \
-        | sed -e "s|^${OUT}/tiles/||" -e 's|\.png$||' \
+    find "${OUT}/tiles/${BASE_ZOOM}" -name "*.${TILE_FORMAT}" \
+        | sed -e "s|^${OUT}/tiles/||" -e "s|\.${TILE_FORMAT}\$||" \
         | sort -u > "${SCRATCH}/published_parents"
 fi
 check 'planned and published parent tiles are the same set' \
@@ -123,6 +124,10 @@ check 'the viewer starts the pyramid at the base zoom' \
     grep -q "minZoom: ${BASE_ZOOM}" "${OUT}/tiles/index.html"
 check 'the viewer falls back to OSM below it' \
     grep -q 'tile.openstreetmap.org' "${OUT}/tiles/index.html"
+# The viewer hardcodes the tile extension, so it drifts silently from what MAKE_TILES publishes --
+# a blank map with a console full of 404s, and every other assertion here still green.
+check 'the viewer asks for the extension that was published' \
+    grep -q "'{z}/{x}/{y}.${TILE_FORMAT}'" "${OUT}/tiles/index.html"
 
 echo '==> QC reporting'
 # Header-only: a stub run has no failures, and a QC file that is empty rather than header-only means

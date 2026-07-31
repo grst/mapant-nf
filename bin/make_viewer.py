@@ -59,10 +59,10 @@ TEMPLATE = """<!DOCTYPE html>
     attribution: '__OSM_ATTRIBUTION__'
   }).addTo(map);
 
-  // The rendered tiles live in ./{z}/{x}/{y}.png next to this file. `noWrap` matters: without it
-  // Leaflet requests copies of the world either side of the antimeridian and the console fills
-  // with 404s.
-  L.tileLayer('{z}/{x}/{y}.png', {
+  // The rendered tiles live in ./{z}/{x}/{y}.__TILE_FORMAT__ next to this file. `noWrap` matters:
+  // without it Leaflet requests copies of the world either side of the antimeridian and the console
+  // fills with 404s.
+  L.tileLayer('{z}/{x}/{y}.__TILE_FORMAT__', {
     minZoom: __BASE_ZOOM__,
     maxZoom: __MAX_ZOOM__,
     tileSize: 256,
@@ -101,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--base-zoom", type=int, required=True)
     ap.add_argument("--max-zoom", type=int, required=True)
+    # Must match what MAKE_TILES passed to `k2t make-tiles --format`, or the viewer asks for tiles
+    # that were never written and shows a blank page.
+    ap.add_argument("--tile-format", choices=("webp", "png"), default="webp")
     ap.add_argument("--title", default="mapant")
     args = ap.parse_args(argv)
 
@@ -141,6 +144,7 @@ def main(argv: list[str] | None = None) -> int:
         "__DEFAULT_ZOOM__": str(default_zoom),
         "__BASE_ZOOM__": str(args.base_zoom),
         "__MAX_ZOOM__": str(args.max_zoom),
+        "__TILE_FORMAT__": args.tile_format,
         "__OSM_TILES__": OSM_TILES,
         "__OSM_ATTRIBUTION__": OSM_ATTRIBUTION,
         "__ATTRIBUTION__": ATTRIBUTION,

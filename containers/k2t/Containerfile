@@ -13,7 +13,7 @@ FROM docker.io/library/python:3.13-slim
 # image needs rebuilding from the hash of this directory: an unpinned dependency would mean the same
 # hash could produce different images, and that the newer version would never be picked up anyway
 # (nothing would trigger a rebuild). Bumping this line is what publishes a new image.
-ARG K2T_VERSION=0.1.3
+ARG K2T_VERSION=0.2.0
 
 # procps: Nextflow shells out to `ps` for task metrics and fails the task without it.
 #

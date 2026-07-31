@@ -20,6 +20,7 @@ process TILE_VIEWER {
         --out tiles/index.html \\
         --base-zoom ${params.base_zoom} \\
         --max-zoom ${params.max_zoom} \\
+        --tile-format ${params.tile_format} \\
         --title '${params.map_title}'
     """
 }

@@ -2,7 +2,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://raw.githubusercontent.com/grst/mapant/main/nextflow_schema.json",
     "title": "mapant pipeline parameters",
-    "description": "Generate a web-mercator PNG tile pyramid from a list of LiDAR tiles using karttapullautin.",
+    "description": "Generate a web-mercator raster tile pyramid from a list of LiDAR tiles using karttapullautin.",
     "type": "object",
     "$defs": {
         "input_output": {
@@ -186,6 +186,13 @@
                     "maximum": 22,
                     "description": "Deepest zoom level to generate.",
                     "help_text": "z18 is about 0.4 m/px at central-European latitudes, which matches karttapullautin's 0.4233 m/px output. Each extra level quadruples the file count: ~8.8 M tiles for Bavaria at z18 against ~2.2 M at z17."
+                },
+                "tile_format": {
+                    "type": "string",
+                    "default": "webp",
+                    "enum": ["webp", "png"],
+                    "description": "Image format of the published tiles; both are lossless.",
+                    "help_text": "WebP is smaller than PNG at identical pixels -- 23% measured by tiling one test_local render both ways; upstream quotes ~25%. Choose 'png' only for a consumer that cannot read WebP; every browser released since 2020 can. The published extension follows the format, and so does the generated viewer."
                 }
             }
         }

@@ -1,3 +1,5 @@
+# Original prompt
+
 I want to create an automatically generated orienteering map of entire bavaria ("mapant").
 
 Input data: 
@@ -76,8 +78,8 @@ grids.
 
 ---
 
-Simplifications (1)
----------------
+# Simplifications (1)
+
  * prefer a python script over the massive fetch_laz or run_pullauta shell scripts
  * you can always assume that a tile size is larger than the 127m halo ring. No need to check for that, just use one ring. 
  * You can also drop any comments that grid size does not affect quality, that's obvious. 
@@ -89,26 +91,23 @@ Simplifications (1)
  * container images are no parameters, they can be set in config files. Remove them as parameters. 
  * python has a configparser that can read ini files in the standard lib. Use this over manually parsing ini with regexes. 
 
-Simplifications (2)
--------------------
+---
+
+# Simplifications (2)
+
  * no "tile overviews". In the viewer, just show OSM mapnik at lower zoom levels. 
- 
-Simplifications (3)
--------------------
+
+---
+
+# Simplifications (3)
+
  * the nextflow output log is too verbose -- don't print the name of every single tile generated.
 
-Simplifications (4)
--------------------
+---
+
+# Simplifications (4)
+ 
  * remove the test_local profile, and everything else that points at machine-local configuration
    (the local_images profile, --laz_local_dir). Make test_immenstadt self-contained: put the
    corresponding subset of the laz CSV and a reduced pbf in assets/, so it runs on anyone's machine.
    testdata/ is not tracked by git and nothing in the repository may depend on it.
- 
----
-
-k2t optimizations
-
- - Compare png to lossless webp. How much storage could be saved? 
- - The source render has 14 colours; a z18 tile of the same ground has 2,659. Those come from k2t's resampling, not from the map. Quantising a z18 tile back to a 16-colour palette gives 75–88% smaller files — twice what WebP achieves — but it is lossy relative to the current output (26–63% of pixels change) and I haven't looked at whether it's visually acceptable. It may well look closer to the source render, since it's re-snapping blended pixels back to the cartographic palette, but that's a claim to verify by eye, not one I've tested.
-
----

@@ -14,8 +14,9 @@ list and some of it is a deliberate rejection of one.
 nextflow lint .                       # strict v2 parser
 tests/test_config_profiles.sh         # every profile resolves; derived config tracks its params
 shellcheck tests/*.sh tests/stub_pullauta containers/*.sh \
-           containers/karttapullautin/pullauta scripts/*.sh
-.venv/bin/pytest tests/               # 37 tests: plan_grids' geometry, run_pullauta's recovery ladder
+           containers/karttapullautin/pullauta
+.venv/bin/pytest tests/               # 41 tests: plan_grids' geometry, run_pullauta's recovery
+                                      # ladder, fetch_laz's permanent/transient verdict
 
 # One test, one case
 .venv/bin/pytest tests/test_plan_grids.py::test_tile_size_inference_uses_the_mode_not_the_mean -v
@@ -23,25 +24,26 @@ shellcheck tests/*.sh tests/stub_pullauta containers/*.sh \
 # The whole DAG offline: stubbed processes, no containers, no data (~1 min)
 PATH="$PWD/.venv/bin:$PATH" tests/test_stub_wiring.sh
 
-# Real runs. The first three need testdata/ (~52 GB, not in the repo)
-nextflow run . -profile podman,test_local          # ~15 min, no network
-tests/test_grid_independence.sh                    # ~10 min
-tests/test_failure_injection.sh                    # ~8 min
-nextflow run . -profile podman,test_immenstadt     # ~15 min, downloads ~7.4 GB
+# Real runs. Both are self-contained -- their inputs are in assets/ -- but download from
+# geodaten.bayern.de, so they are run by hand rather than in CI.
+nextflow run . -profile podman,test_immenstadt     # ~15 min, downloads ~5.4 GB
+tests/test_failure_injection.sh                    # ~10 min, downloads ~2.6 GB
 
 # Containers
 containers/build.sh [name ...]        # builds mapant/<name>:{version,latest}
 containers/build.sh --manifest       # names/tags/build-args as JSON; CI's single source of truth
 containers/smoke.sh k2t              # per-image checks; also runs in CI on every build
-nextflow run . -profile podman,local_images,test_local   # use locally built images
+# To run against those images, write the four withName selectors into a -c file; there is
+# deliberately no profile for them (see the Quickstart in README.md).
 ```
 
 Python for tests and for `bin/*.py` outside a container: `python -m venv .venv &&
 .venv/bin/pip install -r tests/requirements.txt`. `nextflow run` with no container profile executes
 processes locally, so a stub run needs those packages on `PATH`.
 
-`shellcheck` is not installed in the devcontainer — CI installs it, and the static release tarball
-runs fine here. Nothing in `bin/` is shell any more; what is left is tests, container helpers and the
+`shellcheck` is not installed in the devcontainer — CI installs it, the static release tarball runs
+fine here, and `uv pip install --python .venv/bin/python shellcheck-py` puts the same binary at
+`.venv/bin/shellcheck` without touching the system (the venv has no `pip` of its own). Nothing in `bin/` is shell any more; what is left is tests, container helpers and the
 ISA wrapper. `.shellcheckrc` disables three style checks with the reasoning; everything else is a hard
 failure. Workflow files are checked with `actionlint` (also not installed; it embeds shellcheck for
 `run:` blocks, so run it with shellcheck on `PATH`).
@@ -68,8 +70,10 @@ Three upstream facts the design depends on, all established by reading karttapul
 
 1. **The halo is 127 m.** `batch_process` builds each tile from every input within 127 m of it, then
    crops back. Tiles are kilometres across, so one ring of neighbours always covers that reach: a tile
-   renders byte-identically regardless of batch size, and grids can be partitioned freely.
-   `tests/test_grid_independence.sh` proves it byte-for-byte; don't weaken it.
+   renders byte-identically regardless of batch size, and grids can be partitioned freely. It was
+   verified by rendering one tile alone and again inside a 2x2 block and `cmp`-ing the PNGs (pin
+   `PULLAUTA_ISA`, or the two builds' autovectorisation makes the comparison meaningless); the
+   standing check is that `-profile test_immenstadt`'s two grids leave no seam between them.
 2. **karttapullautin skips a file whose output PNG already exists**, while still reading it for the
    halo. `bin/run_pullauta.py` exploits this twice: empty placeholder PNGs suppress rendering of ring
    tiles (a third of the compute), and the same trick blacklists a tile that panics without degrading
@@ -102,8 +106,7 @@ unpacked once per grid and scanned a hundred times.
 - **A one-item queue channel pairs with exactly one consumer.** `RENDER_INI.out.ini.first()` makes it
   a value channel; without `.first()` every grid but one starves.
 - **Never edit a staged input in place** — it is a symlink to the user's file. `RENDER_INI` uses
-  `stageAs` plus a copy for this reason, and the local-laz directory is staged as `laz_local_src`
-  because staging it as `in` would collide with the download target and write into `testdata/`.
+  `stageAs` plus a copy for this reason.
 - **No `$projectDir` inside a process body**: on an executor without a shared filesystem that path
   does not exist. Stage the file as an input instead. The same rule rules out bind mounts and any
   host-absolute path in committed config.
@@ -120,6 +123,11 @@ unpacked once per grid and scanned a hundred times.
   checks `-resume` that way.
 - **The interactive shell here is zsh**, where `"$var:tag"` eats `:t`/`:c`/`:h` as history modifiers.
   Use `"${var}:tag"` — this has produced a mis-tagged image and a broken `git rev-parse` already.
+- **podman never re-pulls a tag it already has**, and three of the four images are referenced as
+  `:latest`. A working tree newer than the local image cache therefore runs against whatever was
+  pulled weeks ago: the k2t 0.2.0 bump against a cached 0.1.3 fails as `Unknown option: --format` in
+  `MAKE_TILES`, minutes into a run, with nothing pointing at the image. `podman pull` the four images
+  before trusting a red end-to-end run — a fresh machine, having no cache, is unaffected.
 
 ## Containers
 
@@ -148,7 +156,12 @@ created from in here. `scripts/setup-container-runtime.sh` is idempotent and doc
 cgroups are not delegated, so a `memory` directive is only a scheduling hint locally while being a
 hard OOM limit on a real node.
 
-`testdata/` (~52 GB of LiDAR and OSM, plus a prototype run) is git-ignored and not distributable. The
-small CSVs derived from it in `tests/fixtures/` **are** tracked. `tests/test_failure_injection.sh`
-skips itself when `testdata/` is missing; `tests/test_grid_independence.sh` and `-profile test_local`
-do not, so run them only where the LiDAR is present.
+`testdata/` (~52 GB of LiDAR and OSM, plus a prototype run) is git-ignored and not distributable, and
+**nothing in the repository depends on it any more**. The subsets derived from it that the tests need
+are tracked: `assets/laz_tiles_immenstadt.csv` and `assets/immenstadt.osm.pbf` (the two inputs of
+`-profile test_immenstadt`, which `tests/test_failure_injection.sh` also runs against) and the
+fixtures in `tests/fixtures/`. Keep it that way — a test that reaches into `testdata/` is a test only
+this machine can run.
+
+The `test_*` line in `.gitignore` is anchored (`/test_*`) for the same reason it had to be: unanchored
+it matches at every level, so every new file added under `tests/` is silently ignored.

@@ -32,16 +32,22 @@ pyramid, and automates the manual process documented in
 ```bash
 bash scripts/setup-container-runtime.sh   # only in this devcontainer; idempotent
 
-# ~10 minutes, no network traffic, renders from testdata/
-nextflow run . -profile podman,test_local
+# ~15 minutes; downloads ~5.4 GB of LiDAR from the source server
+nextflow run . -profile podman,test_immenstadt
 
-# open results_test_local/tiles/index.html
+# open results_immenstadt/tiles/index.html
 ```
 
-Then a real region, downloading from the source server:
+That is the whole pipeline on a real region, and it needs nothing but a checkout: both of its inputs
+are committed ([`assets/laz_tiles_immenstadt.csv`](assets/laz_tiles_immenstadt.csv) and
+[`assets/immenstadt.osm.pbf`](assets/immenstadt.osm.pbf)), and the LiDAR the CSV names is fetched as
+it renders. [`conf/test_immenstadt.config`](conf/test_immenstadt.config) explains how the two assets
+were cut and why they are faithful subsets.
+
+To see the DAG without downloading anything at all:
 
 ```bash
-nextflow run . -profile podman,test_immenstadt
+nextflow run . -profile test_stub -stub-run
 ```
 
 And a run of your own:
@@ -60,14 +66,27 @@ nextflow run . -profile podman \
 The four container images are pulled from
 [GHCR](https://github.com/grst/mapant-nf/pkgs/container/mapant-nf%2Fkarttapullautin), where CI
 publishes them from `main`; nothing needs building to run the pipeline. To use images built on this
-machine instead — which is what you want while editing a `Containerfile` — build them and add one
-profile:
+machine instead — which is what you want while editing a `Containerfile` — build them and point the
+selectors at them:
 
 ```bash
-containers/build.sh                                   # all four, tagged mapant/<name>:latest
-containers/smoke.sh k2t                               # check one of them
-nextflow run . -profile podman,local_images,test_local
+containers/build.sh          # all four, tagged mapant/<name>:latest
+containers/smoke.sh k2t      # check one of them
+
+cat > local_images.config <<'EOF'
+process {
+    withName: 'PLAN_GRIDS|RENDER_INI|MAKE_TILES|TILE_VIEWER' { container = 'mapant/k2t:latest' }
+    withName: PULLAUTA_GRID { container = 'mapant/karttapullautin:latest' }
+    withName: OSM_EXTRACT   { container = 'mapant/osmium:latest' }
+    withName: OSM_TO_SHAPES { container = 'mapant/gdal:latest' }
+}
+EOF
+nextflow run . -profile podman,test_immenstadt -c local_images.config
 ```
+
+A `-c` file rather than a profile in `nextflow.config`, because which images a machine happens to
+have built is a property of that machine — the same reason no host path appears in committed
+config.
 
 ## The input contract
 
@@ -89,8 +108,13 @@ or form a complete lattice; holes and ragged edges are handled.
 **Checksums are mandatory, and load-bearing.** A truncated laz does not make karttapullautin
 fail: it renders whatever points it managed to read and produces a plausible but wrong map. The
 checksum is the only thing that distinguishes "this tile is finished" from "this tile is
-finished badly", which is why every file is verified on every attempt — including files taken
-from `--laz_local_dir`.
+finished badly", which is why every file is verified on every attempt, however it arrived — a
+`file://` URL in the CSV goes through exactly the same checks as an `https://` one.
+
+The verdict matters as much as the check. A transfer that *completes* and still does not match —
+a stale checksum, a bad mirror — will not match on the next attempt either, so it is reported as
+permanent: one recorded hole in the map. Calling it transient would fail the grid task, exhaust
+its retries and lose every other tile in the grid along with it.
 
 ## How it works, and why
 
@@ -107,10 +131,12 @@ back to the tile. So a tile rendered with all neighbours within 127 m present is
 to the same tile rendered in any larger batch, and since tiles are at least 1 km across, "all
 neighbours within 127 m" is one ring of the lattice.
 
-`tests/test_grid_independence.sh` renders the same tile alone and inside a 2×2 block and compares
-the bytes, so this claim is checked rather than believed. `-profile test_local` checks the visible
-consequence: it renders 8 tiles as *two independent grids* and the finished 4 km × 2 km map has no
-seam at the grid boundary — contours and vegetation run straight through it.
+`-profile test_immenstadt` checks the visible consequence: it renders 8 tiles as *two independent
+grids* and the finished 4 km × 2 km map has no seam at the grid boundary — contours and vegetation
+run straight through it. The stronger form of the check is to render one tile alone (a 1 km
+`--region_bbox`) and again inside a 2×2 block, and `cmp` the two PNGs out of the work directories;
+they are byte-identical, which is what makes `grid_size` a download/disk knob rather than a quality
+setting.
 
 The ring is drawn from the **whole** CSV, not from the region-filtered selection. Otherwise a
 `--region_bbox` run would render its edge tiles from fewer points than a full run would, and a small
@@ -147,7 +173,7 @@ At 15 TB the LiDAR cannot be staged as a Nextflow input, and cannot outlive the 
 it. `PULLAUTA_GRID` therefore fetches, checksums, renders and prunes in a single task, and
 installs a `trap` so its temporaries are removed even when it fails or is retried — otherwise one
 failed grid would strand ~30 GB and a hundred would fill the disk. After a run, `work/` holds only
-PNGs — 20 MB after `test_local` processes 10 GB of LiDAR.
+PNGs — 20 MB after `test_immenstadt` processes 5.4 GB of LiDAR.
 
 karttapullautin does not do this itself. `savetempfiles`/`savetempfolders` control extra
 *outputs*, not cleanup: it never deletes its `temp{n}/` directories or its `temp{n}.xyz.bin`
@@ -220,7 +246,7 @@ One task per base-zoom tile bounds memory (k2t holds every overlapping source re
 many tasks into one pyramid is a plain union.
 
 Tiles are **lossless WebP**, k2t's default since 0.2.0 — pixel-identical to the PNG it used to write
-and 23% smaller: measured by tiling one `test_local` render both ways, 255 tiles that decode to the
+and 23% smaller: measured by tiling one render both ways, 255 tiles that decode to the
 same bytes at 4.94 MB against 6.42 MB. At Bavaria's ~8.8 M tiles that is tens of gigabytes of storage
 and of egress. `--tile_format png` switches back for a consumer that cannot
 read WebP. The pipeline passes `--format` explicitly rather than inheriting k2t's default, because
@@ -287,7 +313,7 @@ The render figure is measured, not guessed, from four grids across two regions:
 
 | Region | mean tile | CPU-s per tile |
 | --- | --- | --- |
-| Kemptner Wald (`test_local`) | ~400 MB | 171, 186 |
+| Kemptner Wald | ~400 MB | 171, 186 |
 | Immenstadt (`test_immenstadt`) | ~166 MB | 116, 123 |
 
 Bavaria's mean is 208 MB/tile, between the two, so ~2.5 CPU-min/tile is the central estimate. It
@@ -343,19 +369,18 @@ Granite Rapids has AVX-512, so the v4 build is selected there — check for
 ## Tests
 
 The first four rows run in CI on every pull request and every push to `main`
-([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The rest need the ~52 GB of LiDAR in
-`testdata/`, or a multi-gigabyte download, so they are run by hand before a release.
+([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). The other two download several gigabytes
+from an open-data server, so they are run by hand before a release — but they need nothing else, so
+anyone can run them.
 
 | Command | What it establishes | Time | CI |
 | --- | --- | --- | --- |
-| `pytest tests/` | planning geometry, the CSV schema, and crash recovery against a stub renderer — 37 tests | 4 s | ✅ |
+| `pytest tests/` | planning geometry, the CSV schema, download verdicts, and crash recovery against a stub renderer — 41 tests | 4 s | ✅ |
 | `bash tests/test_stub_wiring.sh` | the whole DAG with fabricated outputs: joins, fan-in, nested publishing, `-resume` — 21 assertions | 1 min | ✅ |
-| `bash tests/test_config_profiles.sh` | every profile resolves and derived settings track their params | 30 s | ✅ |
+| `bash tests/test_config_profiles.sh` | every profile resolves, derived settings track their params, and `test_immenstadt`'s inputs are in the repository | 30 s | ✅ |
 | `nextflow lint .` + `shellcheck` | strict-parser clean; scripts clean | 10 s | ✅ |
-| `nextflow run . -profile podman,test_local` | end to end, no network: 8 tiles, 2 grids, **no seam at the grid boundary**, `work/` left at 20 MB | ~15 min | |
-| `bash tests/test_grid_independence.sh` | a tile renders byte-identically alone and batched | ~10 min | |
-| `bash tests/test_failure_injection.sh` | a corrupt laz leaves one hole, is reported twice, and does not stop the run | ~8 min | |
-| `nextflow run . -profile podman,test_immenstadt` | end to end with real downloads; also the timing calibration | ~15 min | |
+| `nextflow run . -profile podman,test_immenstadt` | end to end with real downloads: 8 tiles, 2 grids, **no seam at the grid boundary**, `work/` left at 20 MB; also the timing calibration | ~15 min | |
+| `bash tests/test_failure_injection.sh` | a laz the CSV misdescribes leaves one hole, is reported twice, and does not stop the run | ~10 min | |
 | `containers/smoke.sh <name>` | an image has `bash`, `ps` and the tool it exists for; for karttapullautin, that the v4 build really is AVX-512 | 30 s | ✅ (on build) |
 
 All of the above pass. The Python tests need a few host packages:
@@ -416,7 +441,7 @@ process {
   step upstream of `parent_tiles.csv`; it must not go inside `MAKE_TILES`, because k2t writes
   opaque white for nodata and two runs cannot be alpha-composited.
 - **The ring is computed from the CSV's bounding boxes, karttapullautin's halo from the LAZ headers.**
-  If they disagree the halo is subtly wrong with no error. `test_local` renders real files, so it
+  If they disagree the halo is subtly wrong with no error. `test_immenstadt` renders real files, so it
   would show up there.
 - **One ring assumes tiles wider than 127 m**, which every LiDAR product this targets is by two
   orders of magnitude. A dataset of sub-127 m tiles would need more than one ring.
@@ -424,7 +449,7 @@ process {
   The recovery ladder will blacklist tiles one by one and ultimately fail the grid, which is
   reported but not worked around.
 - The pipeline does not fetch the tiles CSV for you; producing it from a provider's catalogue is
-  region-specific work. `testdata/laz_tiles.csv` is the Bavarian example.
+  region-specific work. `assets/laz_tiles_immenstadt.csv` is 24 rows of the Bavarian example.
 
 ---
 

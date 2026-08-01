@@ -1,0 +1,33 @@
+# A production-scale test region: the Oberallgäu Alps, from the Austrian border near Feldkirch
+# (47°14'37.4"N 9°40'02.6"E) up past Oberstdorf/Sonthofen/Immenstadt to Nesselwang
+# (47°43'13.1"N 10°26'59.8"E). ~53 x 59 km, given directly in lon/lat so no UTM conversion is
+# needed -- region_bbox_crs 'lonlat' is what PLAN_GRIDS reprojects internally.
+#
+# Unlike test_local/test_immenstadt this does not shrink grid_size, pullauta_processes or the zoom
+# range: it runs with the pipeline's production defaults, so it is meant to be run on
+# production-sized hardware (combine with -profile c8id) rather than a laptop.
+#
+# The box straddles the Bavaria/Austria/Liechtenstein border. Of the ~3,100 1km tiles it covers, only
+# 1,629 are in Bavaria's tiles_csv; the rest are simply absent from the CSV and PLAN_GRIDS renders
+# only the covered side, no special handling needed. Those 1,629 core tiles are ~312 GiB; with the
+# ~1.44x halo amplification at the default grid_size (10) that's roughly 450 GiB actually fetched.
+#
+# A params-file rather than a -profile: it is nothing but params (no process/container overrides),
+# and paths are relative to the repo root, so run it from there:
+#
+#   nextflow run . -profile podman,c8id -params-file conf/test_allgaeu.yml
+
+tiles_csv: testdata/laz_tiles.csv
+osm_pbf: testdata/shapefiles_bayern/bayern-260728.osm.pbf
+
+region_bbox: '9.6673889,47.2437222,10.4499444,47.7203056'
+region_bbox_crs: lonlat
+
+# Polite defaults for a public server; raise these (as conf/c8id.config does) once you actually mean
+# to pull the full ~450 GiB rather than just checking the region resolves correctly.
+download_jobs: 4
+download_limit_rate: '20M'
+
+map_title: 'mapant test -- Oberallgäu'
+outdir: results_allgaeu
+publish_mode: copy

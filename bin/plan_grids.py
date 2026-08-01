@@ -279,8 +279,9 @@ def build_grids(
     `halo_pool` is deliberately the *whole* dataset rather than the region-filtered selection. Halo
     membership decides what points a render can see, so drawing it from the selection would make a
     `--bbox` run produce different pixels than a full run for the same tile. Keeping the pool global
-    is what makes a small test region a faithful sample, and what
-    tests/test_grid_independence.sh relies on.
+    is what makes a small test region a faithful sample -- and what lets
+    assets/laz_tiles_immenstadt.csv be 24 rows of Bavaria's export and still plan the grids the full
+    71,979-row CSV plans for that bbox.
     """
     tile_w, tile_h, _ = infer_tile_size(core_tiles)
 

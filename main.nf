@@ -90,8 +90,7 @@ workflow {
     PULLAUTA_GRID(
         ch_pullauta_in,
         ch_ini,
-        file(params.vectorconf ?: "${projectDir}/assets/NONE"),
-        file(params.laz_local_dir ?: "${projectDir}/assets/NONE")
+        file(params.vectorconf ?: "${projectDir}/assets/NONE")
     )
 
     // One item per rendered tile. transpose() expands the per-grid lists of PNGs and PGWs in step;

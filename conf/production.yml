@@ -1,0 +1,34 @@
+# The full production run: all of Bavaria, no region_bbox filter. Nothing but the two required
+# inputs plus a title -- process/executor sizing (grid_size, zoom range, download concurrency,
+# publish_mode) comes from -profile c8id, not from here.
+#
+# Two things c8id.config itself can't set because they are properties of the instance, not the
+# pipeline (see conf/c8id.config and testdata/scripts/prepare_c8id.sh):
+#
+#   -w /mnt/nvme/work   workDir on the striped instance NVMe -- not the 8 GiB root volume
+#   --outdir            somewhere durable; instance storage is lost when the instance stops
+#
+#   nextflow run . -profile podman,c8id -w /mnt/nvme/work \
+#       -params-file conf/production.yml --outdir /mnt/nvme/results
+#
+# Budget (see README.md, "A full Bavaria run on one node"): ~71,979 tiles, compute is about a day
+# and a half on a c8id.32xlarge. The download (~19 TB) is very likely the binding constraint --
+# benchmark bandwidth from the instance before trusting that number.
+
+tiles_csv: input/laz_tiles.csv
+osm_pbf: input/bayern-latest.osm.pbf 
+
+map_title: 'mapant -- Bayern'
+outdir: /mnt/nvme/results/prod
+
+
+download_jobs: 8
+download_limit_rate: '200M'
+
+base_zoom: 12
+max_zoom: 18
+
+grid_size: 16
+pullauta_processes: 16
+
+osm_chunk_size: 32

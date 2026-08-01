@@ -10,8 +10,7 @@
 # bug would have been caught here.
 #
 # What it cannot cover is whether any pixel is correct. A stub run is green on a pipeline that
-# renders garbage; tests/test_grid_independence.sh and `-profile test_local` are what check that,
-# and both need testdata/.
+# renders garbage; `-profile test_immenstadt` is what checks that, and it downloads real LiDAR.
 #
 # Usage:  tests/test_stub_wiring.sh
 set -euo pipefail

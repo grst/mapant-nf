@@ -7,8 +7,15 @@
 #   REGISTRY=ghcr.io/you containers/build.sh --push
 #   containers/build.sh --manifest       # print names/tags/build-args as JSON (used by CI)
 #
-# `-profile local_images` points the pipeline at the images produced here; conf/containers.config has
-# the published ones.
+# conf/containers.config names the published images the pipeline uses by default. To run against the
+# ones built here, override the selectors in a config of your own:
+#
+#   process {
+#       withName: 'PLAN_GRIDS|RENDER_INI|MAKE_TILES|TILE_VIEWER' { container = 'mapant/k2t:latest' }
+#       withName: PULLAUTA_GRID { container = 'mapant/karttapullautin:latest' }
+#       withName: OSM_EXTRACT   { container = 'mapant/osmium:latest' }
+#       withName: OSM_TO_SHAPES { container = 'mapant/gdal:latest' }
+#   }
 #
 # ---------------------------------------------------------------------------
 # Why the Containerfiles look the way they do
@@ -147,9 +154,9 @@ for name in "${images[@]}"; do
         args+=(--build-arg "${BUILD_ARGS[$name]}")
     fi
 
-    # Tagged twice: the version, and `latest`. `latest` is what nextflow.config's `local_images`
-    # profile points at, so switching to locally built images needs no knowledge of which upstream
-    # release they came from.
+    # Tagged twice: the version, and `latest`. `latest` is what a config pointing at locally built
+    # images can name, so switching to them needs no knowledge of which upstream release they came
+    # from.
     tags=(-t "$ref")
     latest_ref="${REGISTRY}/${name}:latest"
     if [ "$ref" != "$latest_ref" ]; then

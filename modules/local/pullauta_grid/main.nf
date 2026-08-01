@@ -13,10 +13,6 @@ process PULLAUTA_GRID {
     // Pinned to the name RENDER_INI writes into the ini's `vectorconf` key, so a user's shape
     // mapping file can be called anything.
     path(vectorconf, stageAs: 'osm.txt')
-    // stageAs, because Nextflow would otherwise stage this directory under its own basename -- and
-    // the obvious directory to point it at is called `in`, which is where the laz files are
-    // collected. Linking a file "into" it would write into the caller's read-only source tree.
-    path(laz_local_dir, stageAs: 'laz_local_src')
 
     output:
     tuple val(grid_id),
@@ -27,9 +23,6 @@ process PULLAUTA_GRID {
     path "download_failures.${grid_id}.tsv", emit: download_failures
 
     script:
-    // Read from the param rather than from the staged name: stageAs renames the sentinel too, so
-    // laz_local_dir.name is 'laz_local_src' either way and cannot tell the cases apart.
-    def local_opt = params.laz_local_dir ? '--local-dir laz_local_src' : ''
     def limit_rate = params.download_limit_rate ? "--limit-rate '${params.download_limit_rate}'" : ''
     // karttapullautin looks for *.zip in its lazfolder and unzips them itself; there is no separate
     // option for the shapefile set.
@@ -46,7 +39,7 @@ process PULLAUTA_GRID {
     # karttapullautin's `processes` setting bounds only its tile workers: `image` and `imageproc` are
     # built with rayon and size their thread pools from the machine's core count, which measured 677%
     # CPU for a 2-cpu task. Capping the rayon pool keeps a task within its allocation, which is what
-    # lets conf/c8id.config's sizing be computed rather than guessed.
+    # lets a node's sizing be computed rather than guessed.
     export RAYON_NUM_THREADS=${task.cpus}
 
     # Exits non-zero only for failures a retry could fix, so a 404 becomes a recorded hole while a
@@ -57,7 +50,7 @@ process PULLAUTA_GRID {
         --failures download_failures.${grid_id}.tsv \\
         --jobs ${params.download_jobs} \\
         --retries ${params.download_retries} \\
-        ${local_opt} ${limit_rate}
+        ${limit_rate}
 
     ${stage_shapes}
 

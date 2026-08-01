@@ -39,13 +39,6 @@
                     "exists": true,
                     "description": "karttapullautin shape mapping file (osm.txt) translating OSM tags to map symbols."
                 },
-                "laz_local_dir": {
-                    "type": "string",
-                    "format": "directory-path",
-                    "exists": true,
-                    "description": "Directory of already-downloaded LiDAR files to use instead of fetching.",
-                    "help_text": "Files found here are used in place of a download but are still size- and sha256-checked, so the verification path behaves identically. Staged as an ordinary Nextflow input, so it works on any executor. Intended for tests and for re-running against a local mirror."
-                },
                 "outdir": {
                     "type": "string",
                     "format": "directory-path",
@@ -192,7 +185,7 @@
                     "default": "webp",
                     "enum": ["webp", "png"],
                     "description": "Image format of the published tiles; both are lossless.",
-                    "help_text": "WebP is smaller than PNG at identical pixels -- 23% measured by tiling one test_local render both ways; upstream quotes ~25%. Choose 'png' only for a consumer that cannot read WebP; every browser released since 2020 can. The published extension follows the format, and so does the generated viewer."
+                    "help_text": "WebP is smaller than PNG at identical pixels -- 23% measured by tiling one render both ways; upstream quotes ~25%. Choose 'png' only for a consumer that cannot read WebP; every browser released since 2020 can. The published extension follows the format, and so does the generated viewer."
                 }
             }
         }

@@ -17,14 +17,11 @@ cd "$REPO"
 # Every profile that sets params, plus the container-engine profiles it is normally combined with.
 readonly PROFILES=(
     'test_stub'
-    'test_local'
     'test_immenstadt'
-    'c8id'
     'podman,test_stub'
-    'podman,local_images,test_local'
-    'docker,test_local'
+    'docker,test_immenstadt'
     'apptainer,test_immenstadt'
-    'singularity,c8id'
+    'singularity,test_stub'
 )
 
 pass=0
@@ -72,6 +69,20 @@ for profile in "${PROFILES[@]}"; do
 
     rm -f "$out" "${out}.err"
 done
+
+# test_immenstadt is the one end-to-end test anybody can run, and that only holds while both of its
+# inputs are committed. A path typo, or an asset that quietly stopped being tracked, would otherwise
+# surface as a failed run on someone else's machine hours after the commit that caused it.
+echo '==> -profile test_immenstadt inputs are in the repository'
+out="$(mktemp)"
+nextflow config -profile test_immenstadt > "$out"
+tracked() { git ls-files --error-unmatch "$1" > /dev/null 2>&1; }
+for key in tiles_csv osm_pbf; do
+    path="$(value_of "$out" "$key")"
+    check "${key} (${path##*/}) exists" test -s "$path"
+    check "${key} is tracked by git" tracked "$path"
+done
+rm -f "$out"
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ] || exit 1

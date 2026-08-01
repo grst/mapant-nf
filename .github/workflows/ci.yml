@@ -4,10 +4,9 @@ name: tests
 # than by what they cover, so a failure names its own cause: lint needs nothing, unit needs Python,
 # wiring needs both Nextflow and Python.
 #
-# What CI deliberately does not run: anything that renders a pixel. That needs the ~52 GB of LiDAR in
-# testdata/ (tests/test_grid_independence.sh, tests/test_failure_injection.sh, -profile test_local) or
-# a multi-gigabyte download from an open-data server (-profile test_immenstadt). Those are run by
-# hand before a release; README.md says which and why.
+# What CI deliberately does not run: anything that renders a pixel. That needs a multi-gigabyte
+# download from an open-data server (-profile test_immenstadt, tests/test_failure_injection.sh).
+# Those are run by hand before a release; README.md says which and why.
 on:
   pull_request:
   push:

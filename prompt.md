@@ -96,6 +96,13 @@ Simplifications (2)
 Simplifications (3)
 -------------------
  * the nextflow output log is too verbose -- don't print the name of every single tile generated.
+
+Simplifications (4)
+-------------------
+ * remove the test_local profile, and everything else that points at machine-local configuration
+   (the local_images profile, --laz_local_dir). Make test_immenstadt self-contained: put the
+   corresponding subset of the laz CSV and a reduced pbf in assets/, so it runs on anyone's machine.
+   testdata/ is not tracked by git and nothing in the repository may depend on it.
  
 ---
 

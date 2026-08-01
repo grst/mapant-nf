@@ -4,7 +4,7 @@ Acquire every laz file a grid needs into ./in, and prove each one arrived intact
 
 Checksums are not optional here. A truncated laz does not make karttapullautin fail -- it renders
 whatever points it managed to read, so the damage surfaces as a plausible but wrong map tile. So
-every file is verified on every attempt, including files taken from --local-dir.
+every file is verified on every attempt, however it arrived.
 
 Exit status is a contract, because Nextflow's retry logic depends on telling "this will never work"
 apart from "the network had a bad minute":
@@ -91,25 +91,18 @@ def fetch_one(row: dict[str, str], args: argparse.Namespace) -> tuple[str, str]:
         return "ok", "cached"
     dest.unlink(missing_ok=True)
 
-    # A local copy short-circuits the network but not the verification: the fixture path in the test
-    # profiles has to exercise the same checks the real one does. Symlink rather than copy -- a grid
-    # is tens of gigabytes, and the caller's `rm -rf in/` removes the links, not the source.
-    local = args.local_dir / tile if args.local_dir else None
-    if local is not None and local.exists():
-        dest.symlink_to(local.resolve())
-        problem = verify(dest, size, sha)
-        if problem is None:
-            return "ok", "local"
-        dest.unlink()
-        return "permanent", f"local copy failed verification: {problem}"
-
-    # The schema permits a bare path as well as a URL; curl needs a scheme.
+    # The schema permits a bare path as well as a URL; curl needs a scheme. A file:// URL is also how
+    # a run against an already-downloaded mirror is expressed: rewrite the CSV's url column, and the
+    # bytes still go through the same verification as anything off the network.
     url = row["url"]
     if "://" not in url:
         url = Path(url).resolve().as_uri()
 
     part = dest.with_name(dest.name + ".part")
     reason = "no attempt made"
+    # Whether the *last* attempt was a complete transfer of the wrong bytes, as opposed to a transfer
+    # that did not finish. It decides the outcome below.
+    bad_bytes = False
     for attempt in range(1, args.retries + 1):
         status, http_code, stderr = curl(url, part, args.limit_rate)
         if status == 0:
@@ -121,8 +114,10 @@ def fetch_one(row: dict[str, str], args: argparse.Namespace) -> tuple[str, str]:
             # same wrong bytes, the CSV's checksum is stale and no retry will fix it.
             dest.unlink(missing_ok=True)
             reason = problem
+            bad_bytes = True
         else:
             part.unlink(missing_ok=True)
+            bad_bytes = False
             if http_code in PERMANENT_HTTP:
                 return "permanent", f"HTTP {http_code}"
             reason = f"curl exit {status}, HTTP {http_code}: {stderr}"
@@ -132,6 +127,13 @@ def fetch_one(row: dict[str, str], args: argparse.Namespace) -> tuple[str, str]:
             # transient blip becomes a sustained outage for everyone else too.
             time.sleep(attempt * attempt * 5 + random.random() * 5)
 
+    # A server that delivers a whole file which is still the wrong file -- a stale checksum in the
+    # CSV, a bad mirror -- will deliver it again on the next attempt and on the next run. Reporting
+    # that as transient costs the grid: the task exits 1, Nextflow retries it in full, and after
+    # maxRetries the *whole* grid is ignored rather than the one tile. So it is a hole in the map,
+    # exactly like a 404.
+    if bad_bytes:
+        return "permanent", f"verification failed on every attempt: {reason}"
     return "transient", f"{reason} after {args.retries} attempts"
 
 
@@ -158,7 +160,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--failures", type=Path, default=Path("download_failures.tsv"))
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--retries", type=int, default=3)
-    ap.add_argument("--local-dir", type=Path, help="use files found here instead of downloading")
     ap.add_argument("--limit-rate", help="curl --limit-rate value per stream, e.g. '20M'")
     args = ap.parse_args(argv)
 

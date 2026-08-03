@@ -1,7 +1,14 @@
-# mapant
+# mapant-nf
 
 [![tests](https://github.com/grst/mapant-nf/actions/workflows/ci.yml/badge.svg)](https://github.com/grst/mapant-nf/actions/workflows/ci.yml)
 [![containers](https://github.com/grst/mapant-nf/actions/workflows/containers.yml/badge.svg)](https://github.com/grst/mapant-nf/actions/workflows/containers.yml)
+
+`mapant-nf` is a [Nextflow](https://www.nextflow.io/) pipeline that automatically generates [orienteering](https://en.wikipedia.org/wiki/Orienteering) maps from LIDAR data.
+The heavy lifting is done by [karttapullautin](https://github.com/karttapullautin/karttapullautin) and a web-mercator tile pyramid is generated using [karttapullautin2tiles](https://github.com/grst/karttapullautin2tiles). 
+This workflow pipes these tools together in a scalable way, ready to process LIDAR data of a whole country. 
+
+Nextflow is a workflow manager that provides implicit parallelization and abstracts the compute environment. 
+Running this workflow on a single machine, a HPC, or a cloud batch system just requires changing a few lines of configuration.
 
 A Nextflow pipeline that turns a list of LiDAR tiles into a web-mercator raster tile pyramid —
 an automatically generated orienteering map, in the style of

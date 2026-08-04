@@ -35,6 +35,12 @@ containers/build.sh --manifest       # names/tags/build-args as JSON; CI's singl
 containers/smoke.sh k2t              # per-image checks; also runs in CI on every build
 # To run against those images, write the four withName selectors into a -c file; there is
 # deliberately no profile for them (see the Quickstart in README.md).
+
+# The README's metro map. nf-metro is a docs tool, not a test dependency, so it is not in
+# tests/requirements.txt: uv pip install --python .venv/bin/python nf-metro
+nf-metro validate docs/metro_map.mmd  # cheap syntax check
+# Regenerating it needs the exact flag set in the .mmd's header comment, which explains each one --
+# rendering with the defaults produces a picture that is unreadable at the README's width.
 ```
 
 Python for tests and for `bin/*.py` outside a container: `python -m venv .venv &&
@@ -53,6 +59,11 @@ failure. Workflow files are checked with `actionlint` (also not installed; it em
 `main.nf` wires seven processes, one per file under `modules/local/<name>/main.nf`. All non-trivial
 logic lives in `bin/` so it can be tested without Nextflow; a module body should only marshal
 parameters.
+
+`docs/metro_map.mmd` restates that wiring by hand for the README's metro map, and **nothing checks
+that the two still agree** — adding, removing or re-plumbing a process means editing it and
+re-rendering, or the picture at the top of the README quietly starts lying. Its station ids are the
+process names on purpose, which is also what lets `nf-metro serve` light it up live.
 
 The pyramid spans `base_zoom`..`max_zoom` only. There is deliberately no overview step: below the base
 zoom the generated viewer shows OSM's own raster tiles, which avoids a reduction barrier over every

@@ -55,19 +55,12 @@ COPY --from=tippecanoe /usr/local/bin/tile-join /usr/local/bin/tile-join
 # hash could produce different images, and that the newer version would never be picked up anyway
 # (nothing would trigger a rebuild). Bumping a line here is what publishes a new image.
 #
-# shapely 2.1 or newer: bin/make_vector_tiles.py generalises area boundaries with the coverage
-# simplifier, which arrived there. Older, and every traced boundary keeps a vertex per pixel corner.
+# The tiler no longer reads the data -- karttapullautin's GeoJSON goes to tippecanoe as it is -- so
+# what is left is mercantile for the tile arithmetic and pyproj for bin/plan_grids.py.
 RUN pip install --no-cache-dir \
       "mercantile==1.2.1" \
-      "numpy==2.5.3" \
-      "pillow==12.3.0" \
       "pyproj==3.7.2" \
-      "pyshp==3.1.6" \
-      "rasterio==1.5.1" \
-      "shapely==2.1.2" \
- && python -c "import shapely, pyproj, mercantile, rasterio, shapefile, PIL; \
-assert hasattr(shapely, 'coverage_simplify'), 'shapely is too old for the coverage simplifier'; \
-print('shapely', shapely.__version__)" \
+ && python -c "import pyproj, mercantile" \
  && tippecanoe --version
 
 CMD ["/bin/bash"]

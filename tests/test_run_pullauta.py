@@ -56,11 +56,11 @@ class Grid:
                     (self.path / "in" / f"{t}.laz").touch()
 
     def run(self, processes: int = 2, **stub_env: str) -> subprocess.CompletedProcess[str]:
-        # The two keys bin/render_ini.py owns unconditionally: every render this pipeline does is a
+        # The key bin/render_ini.py owns unconditionally: every render this pipeline does is a
         # vector render, so the stub is always asked for one.
         ini = self.path / "effective.ini"
-        if "output_geojson" not in ini.read_text():
-            ini.write_text(ini.read_text() + "\noutput_geojson = 1\nvege_bitmode = 1\n")
+        if "vectorvege = 1" not in ini.read_text():
+            ini.write_text(ini.read_text() + "\nvectorvege = 1\n")
         return subprocess.run(
             [sys.executable, str(SCRIPT),
              "--grid-id", "test_grid",
@@ -201,8 +201,8 @@ def test_a_later_attempt_re_renders_only_what_is_missing(grid):
 def test_vector_output_is_bundled_per_tile_and_gzipped(grid):
     """
     The bundle is what the vector fan-in groups by parent, so its shape is a contract: one
-    directory per core tile, the GeoJSON compressed, the rasters alongside it, and nothing of it
-    left loose in out/ where the publish step would pick it up.
+    directory per core tile holding each layer's GeoJSON compressed, under the name karttapullautin
+    gave it, and nothing of it left loose in out/ where the publish step would pick it up.
     """
     grid.setup(["a1", "a2"], ("h1",))
     proc = grid.run()
@@ -211,22 +211,15 @@ def test_vector_output_is_bundled_per_tile_and_gzipped(grid):
     for stem in ("a1", "a2"):
         bundle = grid.out / f"{stem}_vec"
         assert bundle.is_dir()
+        layers = ("cliffs", "contours", "dotknolls", "formlines", "osm_areas", "osm_lines",
+                  "undergrowth", "vegetation", "yellow")
         assert sorted(p.name for p in bundle.iterdir()) == [
-            f"{stem}.geojson.gz",
-            f"{stem}_blocks_bit.pgw",
-            f"{stem}_blocks_bit.png",
-            f"{stem}_undergrowth_bit.pgw",
-            f"{stem}_undergrowth_bit.png",
-            f"{stem}_vege_bit.pgw",
-            f"{stem}_vege_bit.png",
-            f"{stem}_water_bit.pgw",
-            f"{stem}_water_bit.png",
+            f"{stem}_{layer}.geojson.gz" for layer in layers
         ]
-        with gzip.open(bundle / f"{stem}.geojson.gz", "rt") as fh:
+        with gzip.open(bundle / f"{stem}_contours.geojson.gz", "rt") as fh:
             assert json.load(fh)["type"] == "FeatureCollection"
 
     assert not list(grid.out.glob("*.geojson")), "uncompressed GeoJSON left in out/"
-    assert not list(grid.out.glob("*_bit.png")), "class rasters left loose in out/"
     # The halo tile is only there for its points, so it gets no bundle either.
     assert not (grid.out / "h1_vec").exists()
 
@@ -248,3 +241,29 @@ def test_the_rendered_images_do_not_survive_the_bundle(grid):
     assert not list(grid.out.glob("*.pgw"))
     # ...while the tile is still counted as rendered, which is what keeps a good grid from failing.
     assert "1 tile(s) rendered" in proc.stderr
+
+
+def test_the_grid_crs_reaches_the_renderer_as_epsg(grid):
+    """
+    karttapullautin reprojects its GeoJSON to WGS84 from `epsg`, which is per grid and so cannot be
+    in the shared ini: without it every coordinate would be read in the wrong system.
+    """
+    grid.setup(["a1"])
+    proc = grid.run()
+
+    assert proc.returncode == 0, proc.stderr
+    assert "epsg = 25832" in (grid.path / "pullauta.ini").read_text()
+
+
+def test_a_grid_with_two_crss_is_refused(grid):
+    """One `epsg` per render: a grid straddling two zones would be reprojected wrongly, not fail."""
+    grid.setup(["a1", "a2"])
+    csv_path = grid.path / "grid.csv"
+    lines = csv_path.read_text().splitlines()
+    lines[-1] = lines[-1].replace("EPSG:25832", "EPSG:25833")
+    csv_path.write_text("\n".join(lines) + "\n")
+
+    proc = grid.run()
+
+    assert proc.returncode != 0
+    assert "exactly one EPSG CRS" in proc.stderr

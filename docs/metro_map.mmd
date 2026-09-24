@@ -93,7 +93,7 @@ graph LR
 
     %% Inter-section edges
     PLAN_GRIDS -->|osm| OSM_EXTRACT
-    OSM_TO_SHAPES -->|osm| MAKE_VECTOR_TILES
+    OSM_TO_SHAPES -->|osm| PULLAUTA_GRID
     PLAN_GRIDS -->|lidar| PULLAUTA_GRID
     RENDER_INI -->|ini| PULLAUTA_GRID
     PULLAUTA_GRID -->|lidar| MAKE_VECTOR_TILES

@@ -1,5 +1,8 @@
 # Hand-off: the vector pyramid in mapant-nf
 
+> **Superseded.** This describes the first, bitmap-based prototype. The current plan builds on
+> @malpou's karttapullautin fork -- see `HANDOFF-malpou-stack.md` next to the repositories.
+
 This describes the pipeline as prototyped on the branch **`feature/vector-tiles`** in this working
 copy: `tiles_vector/{z}/{x}/{y}.pbf`, Mapbox vector tiles, and **no raster pyramid at all**.
 

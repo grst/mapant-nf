@@ -1,14 +1,11 @@
 // Turn a grid's OSM extract into an ESRI Shapefile set, reprojected into the grid's own CRS.
 //
-// These used to be karttapullautin's input: it drew the shapes onto the rendered image. Now they
-// are MAKE_VECTOR_TILES' input, and bin/osm_shapes.py matches them to their ISOM codes there --
-// but the shape of this step is unchanged, because what it produces is the same archive and the
-// reprojection is still needed (tippecanoe wants WGS84, and the tiler reprojects from the render's
-// CRS along with everything else).
+// They are karttapullautin's input: it matches each shape to its ISOM code by the rules file and
+// writes it, cropped per tile, next to the LiDAR vectors. In the grid's CRS because that is the
+// one karttapullautin renders in.
 //
-// Per grid rather than once for the region: the archive is joined to the tiles under a parent, so
-// a parent stages only the grids it actually draws from, and a Bavaria-wide archive is never
-// staged anywhere.
+// Per grid rather than once for the region: each PULLAUTA_GRID task stages only its own grid's
+// archive, and a Bavaria-wide archive is never staged anywhere.
 process OSM_TO_SHAPES {
     tag "${grid_id}"
     label 'process_low'
@@ -40,17 +37,13 @@ process OSM_TO_SHAPES {
         -t_srs ${crs}
 
     if compgen -G 'output_shapes/*.shp' > /dev/null; then
-        # Named after the grid, not 'map': a parent tile that draws from two grids stages both
-        # archives into one directory, and two files called map.shp.zip would collide there.
-        #
-        # -j to flatten: osm_shapes.py pairs .shp with .dbf by name, so the layers have to sit at
-        # the root of the archive.
+        # -j to flatten: karttapullautin pairs .shp with .dbf by name, so the layers have to sit
+        # at the root of the archive.
         zip -q -j 'shapes/${grid_id}.shp.zip' output_shapes/*
         printf '%s: %s layer(s)\\n' '${grid_id}' "\$(ls output_shapes/*.shp | wc -l)" >&2
     else
         # No OSM features worth drawing in this grid. A sentinel rather than an empty archive, so
-        # that the join downstream still has something to carry: osm_shapes.py skips any input that
-        # is not a zip.
+        # that the join downstream still has something to carry: PULLAUTA_GRID stages nothing for it.
         printf 'no OSM features in this grid\\n' > 'shapes/${grid_id}.NONE'
         printf '%s: no OSM features; contours and vegetation only\\n' '${grid_id}' >&2
     fi

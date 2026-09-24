@@ -69,12 +69,10 @@ This corresponds to 0.07 CPUh or 0.0028 USD per tile.
  * `RENDER_INI` generates a `.ini` file for `karttapullautin` based on the pipeline parameters. 
  * `OSM_EXTRACT` uses `osmium` to extract OSM shapes that overlap with each grid.
    `OSM_TO_SHAPES` converts them to a `*.shp.zip` per grid, reprojected into the grid's own CRS.
- * `PULLAUTA_GRID` based on the grids defined earlier, downloads the tiles, runs `karttapullautin`, and cleans up the LAZ files. Downloading and processing is done within one process to save disk space. The process produces one vector bundle per tile -- its GeoJSON and its classified rasters -- and collects
-   processing errors in a TSV file. It is given no shapefiles: the OSM shapes never reach the renderer.
- * `MAKE_VECTOR_TILES` cuts one base-zoom parent's subtree with `tippecanoe`. This is where the two
-   halves of the map meet: `karttapullautin`'s vectors for the terrain, and the OSM shapes, which
-   `bin/osm_shapes.py` matches to their ISOM codes here from the same rules file
-   (`--vectorconf`) `karttapullautin` used to be given.
+ * `PULLAUTA_GRID` based on the grids defined earlier, downloads the tiles, runs `karttapullautin` on the LiDAR and the grid's OSM shapes, and cleans up the LAZ files. Downloading and processing is done within one process to save disk space. The process produces one vector bundle per tile -- the map as one GeoJSON per layer, in WGS84, OSM included -- and collects
+   processing errors in a TSV file.
+ * `MAKE_VECTOR_TILES` cuts one base-zoom parent's subtree with `tippecanoe`, handing it the
+   bundles' files as they are.
  * `VECTOR_VIEWER` generates the MapLibre style, the sprite and a preview page.
 
 ## Output data
@@ -87,38 +85,29 @@ past the deepest level that was cut, so the pyramid stops where the LiDAR stops 
 than where the screen does. They also carry the data needed to export an area as an editable OCAD
 file.
 
-The terrain comes from `karttapullautin`'s own vectors (`output_geojson=1`, `vege_bitmode=1`) and
-not from a rendered image, so nothing is traced back out of pixels that was a vector to begin with.
+All of it comes from `karttapullautin`'s own vector output (`vectorvege=1`, `geojson_wgs84=1`,
+from the fork built on @malpou's work): contours generalised and broken around the knoll symbols,
+cliff dashes chained into cliff lines, vegetation traced into polygons in Rust, and the OSM shapes
+matched to their ISOM codes by the rules file (`--vectorconf`). Every feature carries `layer`
+(karttapullautin's class) and `isom` (its symbol). The pipeline does not transform any of it.
 
-Measured on `-profile test_immenstadt`, which is alpine terrain with ~170k cliff hatch segments per
-km² and therefore the worst case for vectors: over zoom 13-16 the pyramid is 95 tiles and 7.3 MiB
-gzipped (15.1 MiB as published, uncompressed; the largest single tile is 1.0 MiB, almost all of it
-cliff hatching). The raster pyramid this replaced was 340 tiles and 6.3 MiB of WebP over the same
-zooms -- and needed z17 and z18 on top to stay sharp, which this does not.
+Measured on `-profile test_immenstadt` (alpine terrain, 8 core km²): over zoom 13-16 the pyramid is
+95 tiles, 2.9 MB as published and 1.6 MiB gzipped; the largest tile is 250 KB. Cutting a parent
+takes under two seconds.
 
 ### What each zoom shows
 
 The pyramid is cut one base-zoom parent at a time, so nothing about a tile may depend on what else
-happens to be in it. tippecanoe's size-driven thinning breaks that rule -- it drops whatever does
-not fit the 500 KB budget, per tile, which puts a lake on an overview tile in one parent and leaves
-it off in the next -- so it is switched off, and each feature instead declares the zoom it appears
-at:
+happens to be in it. tippecanoe's size-driven thinning breaks that rule, so it is switched off, and
+a feature filter on each feature's own `isom` decides the zoom it appears at:
 
 | from the base zoom | one level above the deepest | the deepest zoom only |
 | --- | --- | --- |
-| vegetation, water, index contours, roads, tracks, railways, streams, lakes, open land, marsh, settlement | plain contours and depressions, undergrowth, blocks, buildings, paved areas, small paths | form lines, knolls, slope lines, single-contour depressions, fences, power lines |
+| vegetation, open land, index contours, roads, tracks, railways, streams, lakes, marsh, settlement | plain contours, undergrowth, cliffs, buildings, paved areas, small paths | form lines, knolls, fences, power lines |
 
-The cliff hatching is a texture rather than a set of features -- some 170k two-point ticks per
-square kilometre here, more than everything else put together -- so one tick in sixteen
-survives each zoom out, sampled by a hash of where the tick is. That makes the sample identical
-whichever parent cuts the tile, and nested, so a tick drawn on an overview tile is drawn on every
-deeper one.
-
-The area layers are traced from `karttapullautin`'s classified rasters, and each zoom is traced
-from its own mode-downsampled grid, at about one raster pixel per screen pixel. Generalising the
-raster rather than simplifying the polygons is what keeps two shades of green sharing one boundary:
-simplifying each polygon on its own moves the boundary twice, once per side, and leaves a sliver of
-white paper between them.
+Two shades of green share their boundary vertex for vertex, because karttapullautin traces them from
+one grid; `--detect-shared-borders` keeps tippecanoe from simplifying that boundary twice and
+opening a sliver of white paper between them.
 
 ### How it differs from a karttapullautin render
 
@@ -128,27 +117,13 @@ here as the ISOM 2017-2 symbols they were matched to instead -- a road with its 
 vehicle track and a footpath with their own dashes, undergrowth and marsh with their stripes (from
 the sprite next to the style). Widths and dash lengths are the symbol set's own.
 
-Which shapes are on the map, and what code each carries, is decided by `bin/osm_shapes.py` rather
-than by `karttapullautin` -- from the same rules file, and deliberately with the same semantics
-down to the details that look like accidents (a missing tag comparing equal to the empty string; a
-rule whose code has no symbol leaving the shape for the next rule; an area code needing a closed
-way). It was validated by matching the Immenstadt shapes both ways and comparing feature by
-feature: same features, same codes, positions within 4 cm, the difference being that
-`karttapullautin` rounds its GeoJSON coordinates to a centimetre.
-
 Two symbols are approximated because a style cannot draw a symbol along a line: a fence loses its
 cross ticks and a power line its pylon bars, both becoming plain lines.
 
-The undergrowth areas are also more generous than the stripes the map draws. `karttapullautin`
-samples undergrowth on an 18 m grid (`greendetectsize * 6`) and marks each sample in
-`undergrowth_bit` with a disc about 16 m across the ground -- a little wider than the cell it stands
-for -- so an area here comes out two to three times the area the stripes cover. It is in the right
-place, which it was not until `undergrowth_bit` stopped being cropped as though it were on the
-metre grid of the other three rasters: it is drawn at render resolution, 254/600 m per pixel, and
-the fix is in the karttapullautin branch this pipeline needs.
-
-The `blocks` layer is empty unless the ini sets `detectbuildings=1`. That is what makes
-`karttapullautin` run its block detection at all, and `assets/pullauta.ini` leaves it off.
+Undergrowth is vectorised from karttapullautin's own 18 m undergrowth cells (`greendetectsize * 6`)
+and is only ever ISOM 407; dense undergrowth (409) is not distinguished. Water and blocks
+(`detectbuildings=1`) are drawn on karttapullautin's raster map but have no vector output yet, so
+they are not in the tiles.
 
 ## Transparent use of AI
 

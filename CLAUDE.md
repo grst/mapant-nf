@@ -15,9 +15,8 @@ nextflow lint .                       # strict v2 parser
 tests/test_config_profiles.sh         # every profile resolves; derived config tracks its params
 shellcheck tests/*.sh tests/stub_pullauta containers/*.sh \
            containers/karttapullautin/pullauta
-.venv/bin/pytest tests/               # 79 tests: plan_grids' geometry, run_pullauta's recovery
-                                      # ladder, fetch_laz's verdicts, the tiler's routing and
-                                      # tracing, and osm_shapes' rule semantics
+.venv/bin/pytest tests/               # plan_grids' geometry, run_pullauta's recovery ladder,
+                                      # fetch_laz's verdicts, the tiler's zoom plan and pruning
 
 # One test, one case
 .venv/bin/pytest tests/test_plan_grids.py::test_tile_size_inference_uses_the_mode_not_the_mean -v
@@ -61,13 +60,15 @@ failure. Workflow files are checked with `actionlint` (also not installed; it em
 logic lives in `bin/` so it can be tested without Nextflow; a module body should only marshal
 parameters.
 
-**The pipeline builds one pyramid, and it is vector.** There was a raster one (`MAKE_TILES`,
-`TILE_VIEWER`, karttapullautin2tiles) and it is gone. Its removal is what allows the arrangement
-below: with no rendered image to keep the vectors honest against, karttapullautin has no reason to
-draw the OSM shapes, so it is given none -- `vectorconf` is empty and no archive reaches its input
-folder -- and `bin/osm_shapes.py` matches them in `MAKE_VECTOR_TILES` instead. If a raster product
-is ever wanted again, this is the decision to revisit first: two renderers drawing OSM from two
-code paths is exactly the divergence this avoids.
+**The pipeline builds one pyramid, and it is vector, and karttapullautin does all of its
+cartography.** It is given each grid's LiDAR *and* its OSM shapes, and with `vectorvege=1` and
+`geojson_wgs84=1` (set by `bin/render_ini.py`; `epsg` per grid by `bin/run_pullauta.py`) writes each
+tile's map as one GeoJSON per layer, in WGS84, already in its published form: contours generalised
+and broken around the knolls, cliff dashes chained into lines, vegetation traced, OSM shapes matched
+to their ISOM codes and cropped per tile. The pipeline does not open those files. That requires the
+karttapullautin branch built on @malpou's fork (`feature/vector-stack`; see
+`HANDOFF-malpou-stack.md` next to the repositories) -- **it cannot go to production before that is
+upstream**, because the image is built from an upstream release.
 
 `docs/metro_map.mmd` restates that wiring by hand for the README's metro map, and **nothing checks
 that the two still agree** — adding, removing or re-plumbing a process means editing it and
@@ -78,11 +79,9 @@ The pyramid spans `base_zoom`..`max_zoom` only. There is deliberately no overvie
 zoom the generated viewer shows OSM's own raster tiles, which avoids a reduction barrier over every
 finished tile at the end of a run.
 
-`MAKE_VECTOR_TILES` cuts the pyramid from the GeoJSON and classified rasters karttapullautin writes
-when `output_geojson=1` and `vege_bitmode=1` (both set by `bin/render_ini.py`, which also forces
-`output_dxf=0` and an empty `vectorconf`), plus the OSM shapes matched by `bin/osm_shapes.py`. One
-task per base-zoom parent, disjoint subtrees, `groupKey` fan-in, `remainder: true`. Six things
-about it are load-bearing:
+`MAKE_VECTOR_TILES` hands the bundles' files to tippecanoe unaltered, one `--named-layer` per
+file, the layer being the name karttapullautin gave the file. One task per base-zoom parent,
+disjoint subtrees, `groupKey` fan-in, `remainder: true`. Three things about it are load-bearing:
 
 - **Nothing may be left out to fit a budget.** Every one of tippecanoe's thinning options
   (`--drop-densest-as-needed` and the rest) decides per tile, from whatever happens to be in it, so
@@ -90,55 +89,14 @@ about it are load-bearing:
   appearing and disappearing along the line where two parents meet -- a lake on an overview tile in
   one and not the other -- and it also truncated the *deepest* zoom, which is the one the OCD export
   in mapant-bayern reads. They are all off (`--no-tile-size-limit`, `--no-feature-limit`,
-  `--drop-rate=1`); what each zoom shows is the zoom plan in `make_vector_tiles.py`, written into
-  each feature's `tippecanoe` member, and it depends on the feature alone. The cliff hatching, which
-  is most of the data, is sampled by a hash of the tick's position for the same reason.
-- **`tippecanoe --coalesce` is not an optimisation.** A cliff tick is a two-point line carrying only
-  its class, and there are ~170k per km², so per-feature overhead is most of a tile; coalescing the
-  ones that share their attributes roughly halves it.
-- **Area boundaries are generalised on the raster, not on the polygons.** Two shades of green meet
-  along a pixel edge that belongs to both polygons. `Polygon.simplify` moves that edge twice, once
-  per side, and leaves a sliver of white paper between them -- which is what an earlier version did.
-  Each zoom is therefore traced from its own mode-downsampled grid, and what smoothing is left is
-  `shapely.coverage_simplify`, which simplifies a shared edge once and only ever drops vertices.
-  Dropping rather than moving is also what keeps the polygons of two neighbouring square kilometres
-  meeting along the tile border they share.
+  `--drop-rate=1`); what each zoom shows is the zoom plan in `make_vector_tiles.py`, passed as a
+  `--feature-filter` on each feature's own `isom` and `$zoom`, so it depends on the feature alone.
+- **Two shades of green share their boundary vertex for vertex**, because karttapullautin traces them
+  from one grid. `--detect-shared-borders` and `--no-simplification-of-shared-nodes` keep tippecanoe
+  from simplifying that boundary twice, which would leave a sliver of white paper between them.
 - **`--clip-bounding-box` clips geometry but still writes tiles outside the parent** when their
   buffer reaches in, so `make_vector_tiles.py` prunes anything whose base-zoom ancestor is not this
   parent. Without that, two tasks publish the same tile path with different contents.
-- **A shape in two grids' extracts is written once.** Extracts overlap by `osm_buffer_m` and
-  osmium keeps a crossing way whole in both, so a parent that draws from two grids is handed the
-  same boundary road twice -- 42 % of the features, measured on Immenstadt. `osm_shapes.py` hashes
-  each serialised feature and writes it once. Drawn twice it is invisible; exported to OCAD it is
-  two objects on top of each other.
-- **The OSM shapes are clipped to the ground that was rendered**, which is the union of the bounds
-  of the bundles under the parent. The extract covers a whole grid plus `osm_buffer_m`, so without
-  the clip a road would run out past the last rendered square kilometre into terrain the map says
-  nothing about. Clipping per parent rather than per tile is also why no shape arrives twice.
-- **`bin/osm_shapes.py` is a second implementation of `src/shapefile/render.rs`'s matcher**, and it
-  is a transcription rather than an equivalent: a missing field reads as the empty string (so
-  `bridge!=yes` is true of a way with no bridge tag, and `power!=` means "has a power tag"), only
-  DBF *text* columns are read, a rule whose code has no symbol leaves the shape for the next rule
-  rather than consuming it, and an area code is only drawn from a closed way. Change any of those
-  and the map quietly gains or loses features. It also writes an identical feature once: two grids'
-  extracts overlap, so a parent that draws from both is handed the same boundary road twice. `tests/test_osm_shapes.py` pins each one; the
-  standing check is the feature-by-feature diff against karttapullautin's own output described in
-  the README.
-
-Two things about karttapullautin's classified rasters have each cost a day. A world file gives the
-centre of the north-west pixel, not the corner a geotransform starts at, so `read_world_file`
-subtracts the half pixel; taking the number as it stands puts everything traced from a raster half a
-metre south-east of the vectors drawn over the same ground. And **the four rasters are not on one
-grid**: vegetation, water and blocks are 1 m per pixel, but `undergrowth_bit` is drawn at render
-resolution, 254/600 m per pixel. Nothing here may assume a metre; the pixel size comes from each
-raster's own world file, which is also what decides how far it is downsampled per zoom. (Cropping it
-as though it were metres is what karttapullautin itself did, which put the undergrowth of a tile at
-42 % of its right offset -- fixed in the branch this pipeline needs.)
-
-The `formline` setting decides whether the `*_intermed` classes belong in the contour layer: with
-`formline=2` (the default, and what `assets/pullauta.ini` sets) `render.rs` filters them by slope and
-writes the survivors as `formlines`, so routing the raw candidates into `contours` as well puts
-nearly twice as many lines on the map.
 
 The scale is what shapes everything: 15+ TB of input, ~72,000 tiles, ~3,000 CPU-hours. Nothing may be
 downloaded up front and no intermediate may outlive the task that made it.
@@ -170,11 +128,12 @@ index, lon/lat envelopes via `transform_bounds(densify_pts=21)`, and the tile→
 with each parent's core-tile count. The halo pool is deliberately the **whole** CSV, not the filtered
 selection, so a `--region_bbox` run renders identically to a full one.
 
-OSM extraction stays per grid now that the shapes go to the tiler instead of the renderer, because
-the archive is joined to the tiles under a parent: a parent stages only the grids it actually draws
-from, and the country-wide archive is never staged anywhere. The join carries the archive on each
-*tile* and `unique()`s the list per parent -- staging the same path twice under one name is an
-error, and a hundred copies of one archive would be staged either way.
+OSM extraction is per grid: each `PULLAUTA_GRID` task stages its own grid's archive into
+karttapullautin's input folder as `map.shp.zip`, and the country-wide archive is never staged
+anywhere. A grid with nothing drawable carries a `<grid>.NONE` sentinel instead, which is staged as
+nothing -- only a `.shp.zip` is copied, because karttapullautin would try to unzip anything else.
+Neighbouring extracts overlap by `osm_buffer_m`, which no longer matters: karttapullautin crops the
+shapes per tile, so each piece of a road is written by exactly one tile.
 
 ## Traps that have already cost time
 

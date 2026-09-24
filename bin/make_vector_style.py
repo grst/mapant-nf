@@ -2,9 +2,9 @@
 """
 Write the MapLibre style, metadata and preview page for the vector pyramid.
 
-The vector tiles carry classes, not colours -- `c` for a traced raster class, `k` for a
-karttapullautin layer name, `isom` for a shape's symbol code -- so the map's whole appearance lives
-in this one document, and re-styling it needs no re-rendering.
+The vector tiles carry classes, not colours -- every feature has karttapullautin's own class as
+`layer` and the ISOM symbol it is drawn with as `isom` -- so the map's whole appearance lives in
+this one document, and re-styling it needs no re-rendering.
 
 Every colour and width of the terrain is karttapullautin's own, taken from its source rather than
 sampled from an image: the palette from `src/palette.rs` and the line widths from the square brush
@@ -278,7 +278,7 @@ def shape_line_layer(code: str, spec: IsomLine, casing: bool, width, suffix: str
         "metadata": {"isom:symbol": spec.symbol},
         "type": "line",
         "source": "mapant",
-        "source-layer": "osm_high",
+        "source-layer": "osm_lines",
         "filter": ["in", ["get", "isom"], ["literal", codes_for(code)]],
         "paint": {
             "line-color": rgb(ISOM_BLACK if casing else spec.color),
@@ -343,11 +343,16 @@ def build_style(
     def width(metres: float) -> list:
         return width_expression(metres, latitude, base_zoom, max_zoom)
 
-    # Vegetation class -> colour: 1 is open land, 2 upward are the green shades in order.
-    vegetation_match: list = ["match", ["get", "c"], 1, rgb(YELLOW)]
-    for index, shade in enumerate(shades):
-        vegetation_match += [index + 2, rgb(shade)]
-    vegetation_match.append(rgb((255, 255, 255)))
+    # Vegetation symbol -> colour. karttapullautin draws each green shade index in its own tone and
+    # maps the indices to ISOM symbols by `greenshadeisom`; a symbol is drawn in the darkest tone
+    # that maps to it, which is where its class boundary sits on the rendered map.
+    shade_isom = [c for c in ini.get("greenshadeisom", "406|406|408|408|410").split("|") if c]
+    vegetation_match: list = ["match", ["get", "isom"]]
+    for code in ("406", "408", "410"):
+        indices = [i for i, c in enumerate(shade_isom) if c.strip() == code]
+        tone = shades[min(indices[-1], len(shades) - 1)] if indices else shades[-1]
+        vegetation_match += [code, rgb(tone)]
+    vegetation_match.append(rgb(shades[-1]))
 
     layers: list[dict] = [
         {
@@ -361,6 +366,14 @@ def build_style(
             "type": "background",
             "minzoom": base_zoom,
             "paint": {"background-color": "#ffffff"},
+        },
+        {
+            "id": "yellow",
+            "metadata": {"isom:symbol": "403"},
+            "type": "fill",
+            "source": "mapant",
+            "source-layer": "yellow",
+            "paint": {"fill-color": rgb(YELLOW), "fill-antialias": False},
         },
         {
             "id": "vegetation",
@@ -378,18 +391,19 @@ def build_style(
     # density because `fill-pattern` picks one image for the whole layer.
     layers += [
         {
-            "id": f"undergrowth-{value}",
+            "id": f"undergrowth-{code}",
+            "metadata": {"isom:symbol": code},
             "type": "fill",
             "source": "mapant",
             "source-layer": "undergrowth",
-            "filter": ["==", ["get", "c"], value],
+            "filter": ["==", ["get", "isom"], code],
             "paint": {"fill-pattern": name},
         }
-        for value, name in ((1, "undergrowth"), (2, "undergrowth-dense"))
+        for code, name in (("407", "undergrowth"), ("409", "undergrowth-dense"))
     ]
 
     # The OSM area fills karttapullautin composites under the contours.
-    layers += area_layers("osm_low", ("401", "310", "527", "529"))
+    layers += area_layers("osm_areas", ("401", "310", "527", "529"))
 
     # The curves. Plain and index contours are brown; everything that belongs to a depression is
     # drawn in the depression colour, which is what `render.rs` does with the same classes.
@@ -399,7 +413,7 @@ def build_style(
             "type": "line",
             "source": "mapant",
             "source-layer": "contours",
-            "filter": ["==", ["get", "k"], "contour"],
+            "filter": ["==", ["get", "layer"], "contour"],
             "paint": {"line-color": rgb(BROWN), "line-width": width(brush_metres(2.0))},
         },
         {
@@ -407,7 +421,7 @@ def build_style(
             "type": "line",
             "source": "mapant",
             "source-layer": "contours",
-            "filter": ["==", ["get", "k"], "contour_index"],
+            "filter": ["==", ["get", "layer"], "contour_index"],
             "paint": {"line-color": rgb(BROWN), "line-width": width(brush_metres(3.5))},
         },
         {
@@ -415,7 +429,7 @@ def build_style(
             "type": "line",
             "source": "mapant",
             "source-layer": "contours",
-            "filter": ["in", ["get", "k"], ["literal", ["depression", "slope_line"]]],
+            "filter": ["in", ["get", "layer"], ["literal", ["depression", "slope_line"]]],
             "paint": {
                 "line-color": rgb(depression_color),
                 "line-width": width(brush_metres(2.0)),
@@ -426,7 +440,7 @@ def build_style(
             "type": "line",
             "source": "mapant",
             "source-layer": "contours",
-            "filter": ["==", ["get", "k"], "depression_index"],
+            "filter": ["==", ["get", "layer"], "depression_index"],
             "paint": {
                 "line-color": rgb(depression_color),
                 "line-width": width(brush_metres(3.5)),
@@ -437,7 +451,7 @@ def build_style(
             "type": "line",
             "source": "mapant",
             "source-layer": "contours",
-            "filter": ["==", ["get", "k"], "small_depression"],
+            "filter": ["==", ["get", "layer"], "small_depression"],
             "paint": {
                 "line-color": rgb(depression_color),
                 "line-width": width(brush_metres(3.0)),
@@ -451,7 +465,7 @@ def build_style(
             "paint": {
                 "line-color": [
                     "match",
-                    ["get", "k"],
+                    ["get", "layer"],
                     "formline_depression",
                     rgb(depression_color),
                     rgb(BROWN),
@@ -465,42 +479,16 @@ def build_style(
             "id": "knolls",
             "type": "circle",
             "source": "mapant",
-            "source-layer": "knolls",
+            "source-layer": "dotknolls",
             "paint": {
                 "circle-color": [
                     "match",
-                    ["get", "k"],
+                    ["get", "layer"],
                     ["udepression", "uglyudepression"],
                     rgb(depression_color),
                     rgb(BROWN),
                 ],
                 "circle-radius": width(render_px_metres(7.0) / 2.0),
-            },
-        },
-        {
-            "id": "blocks",
-            "type": "fill",
-            "source": "mapant",
-            "source-layer": "blocks",
-            "paint": {"fill-color": rgb(BLACK), "fill-antialias": False},
-        },
-        {
-            # 1 is water, 2 is the black ground detail drawn from the same image.
-            "id": "water",
-            "type": "fill",
-            "source": "mapant",
-            "source-layer": "water",
-            "paint": {
-                "fill-color": [
-                    "match",
-                    ["get", "c"],
-                    1,
-                    rgb(KP_BLUE),
-                    2,
-                    rgb(BLACK),
-                    rgb(KP_BLUE),
-                ],
-                "fill-antialias": False,
             },
         },
         {
@@ -513,9 +501,7 @@ def build_style(
     ]
 
     # The OSM line work and the fills karttapullautin puts on top: lakes and buildings.
-    layers += area_layers(
-        "osm_high", ("301",), extra_filter=["==", ["geometry-type"], "Polygon"]
-    )
+    layers += area_layers("osm_areas", ("301",))
     layers.append(
         {
             # A building is its ground plan filled solid, in whatever colour the render used.
@@ -523,8 +509,8 @@ def build_style(
             "metadata": {"isom:symbol": "521"},
             "type": "fill",
             "source": "mapant",
-            "source-layer": "osm_high",
-            "filter": ["all", ["==", ["geometry-type"], "Polygon"], ["==", ["get", "isom"], "526"]],
+            "source-layer": "osm_areas",
+            "filter": ["==", ["get", "isom"], "526"],
             "paint": {"fill-color": rgb(building_color)},
         }
     )

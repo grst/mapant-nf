@@ -44,9 +44,9 @@ FAILURE_COLUMNS = (
 # logic only tests for the file's existence.
 IEND = bytes.fromhex("49454e44ae426082")
 
-# The classified rasters karttapullautin writes per tile for the layers that exist only as pixels.
-# Together with <t>.geojson they are what a vector bundle holds.
-VECTOR_RASTERS = ("_vege_bit", "_undergrowth_bit", "_water_bit", "_blocks_bit")
+# A CRS as the grid CSV writes it. karttapullautin takes the bare EPSG code (`epsg`), which is
+# what it reprojects its GeoJSON to WGS84 from.
+EPSG_RE = re.compile(r"^EPSG:(\d+)$")
 
 RENDERED_TILE_RE = re.compile(r"(\S+\.la[sz]) -> ")
 PANIC_RE = re.compile(r"panicked at|^Error|^thread ")
@@ -71,6 +71,14 @@ class Renderer:
         self.halo = [Path(r["tile"]).stem for r in rows if r["role"] == "halo"]
         if not self.core:
             sys.exit(f"run_pullauta.py: {args.csv} lists no core tiles")
+        # PLAN_GRIDS never puts two CRSs in one grid -- the lattice is per CRS -- but karttapullautin
+        # takes one `epsg` for a whole run, so a grid that broke that would be reprojected wrongly
+        # rather than fail. Better to fail.
+        crss = {r["crs"] for r in rows}
+        epsg = [m.group(1) for m in map(EPSG_RE.match, crss) if m]
+        if len(crss) != 1 or len(epsg) != 1:
+            sys.exit(f"run_pullauta.py: {args.csv} must name exactly one EPSG CRS, found {sorted(crss)}")
+        self.epsg = epsg[0]
 
         self.blacklisted: set[str] = set()
         # Provenance for the failure report. Deliberately not obtained by probing the binary: with
@@ -156,6 +164,7 @@ class Renderer:
         cp.optionxform = str
         cp.read_string("[pullauta]\n" + self.args.ini.read_text())
         cp["pullauta"]["processes"] = str(processes)
+        cp["pullauta"]["epsg"] = self.epsg
         # No section header: karttapullautin reads rust-ini's general_section().
         Path("pullauta.ini").write_text(
             "".join(f"{k} = {v}\n" for k, v in cp["pullauta"].items())
@@ -255,22 +264,18 @@ class Renderer:
                 path.unlink()
 
     def is_vector_artifact(self, path: Path) -> bool:
-        """A file belonging to a tile's vector output rather than to its rendered image."""
-        if path.suffix == ".geojson":
-            return True
-        return path.suffix in (".png", ".pgw") and path.stem.endswith(VECTOR_RASTERS)
+        """A file belonging to a tile's vector output (`<t>_<layer>.geojson`), not to its image."""
+        return path.suffix == ".geojson"
 
     def bundle_vectors(self) -> None:
         """
         Gather each core tile's vector output into one `out/<stem>_vec/` directory.
 
-        One directory per tile rather than a dozen loose files, so the pipeline has a single path to
-        group by parent tile -- the same shape as the (png, pgw) pair the raster path groups.
+        One directory per tile rather than nine loose files (`<t>_contours.geojson`,
+        `<t>_vegetation.geojson`, ...), so the pipeline has a single path to group by parent tile.
 
-        The GeoJSON is gzipped on the way in. It is the largest thing a grid leaves behind (~25 MB
-        for a km2 of alpine cliffs, ~4 MB compressed) and it only has to live until the parent tiles
-        covering it have been cut, so paying compression here keeps the waiting set below the
-        raster path's.
+        The GeoJSON is gzipped on the way in -- tippecanoe reads it compressed -- because it only has
+        to live until the parent tiles covering it have been cut.
         """
         for stem in self.core:
             if stem in self.blacklisted:

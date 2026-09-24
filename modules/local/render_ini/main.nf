@@ -15,10 +15,14 @@ process RENDER_INI {
     path 'effective.ini', emit: ini
 
     script:
+    // Empty vectorconf disables karttapullautin's shapefile pass, which is what a region with no
+    // OSM extract needs.
+    def vectorconf = params.osm_pbf && params.vectorconf ? 'osm.txt' : ''
     """
     render_ini.py \\
         --in-ini user.ini \\
         --out-ini effective.ini \\
-        --processes ${processes}
+        --processes ${processes} \\
+        --vectorconf '${vectorconf}'
     """
 }

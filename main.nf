@@ -6,10 +6,9 @@
  * configuration, and it produces a z/x/y directory of Mapbox vector tiles, with the style that
  * draws them. Nothing here is specific to Bavaria; the input contract is assets/schema_tiles.json.
  *
- * The two halves of a tile meet only at the end. karttapullautin renders the LiDAR, and nothing
- * else -- it is given no shapefiles -- while OSM_TO_SHAPES prepares the OSM shapes; the two arrive
- * together at MAKE_VECTOR_TILES, which matches the shapes to their ISOM codes and cuts one
- * parent's subtree from both.
+ * karttapullautin does all the cartography: given a grid's LiDAR and its OSM shapes, it writes each
+ * tile's map as per-layer GeoJSON in WGS84, already in its published form. MAKE_VECTOR_TILES hands
+ * those files to tippecanoe untouched and cuts one parent's subtree.
  *
  * See README.md for the design, and each run's published plan_summary.txt for its own numbers.
  */
@@ -92,18 +91,16 @@ workflow {
     // ---------------------------------------------------------------------
     // Render
     // ---------------------------------------------------------------------
-    PULLAUTA_GRID(ch_grid_shapes.map { grid_id, csv, _shapes -> tuple(grid_id, csv) }, ch_ini)
+    PULLAUTA_GRID(
+        ch_grid_shapes,
+        ch_ini,
+        file(params.vectorconf ?: "${projectDir}/assets/NONE")
+    )
 
-    // One item per rendered tile, carrying its grid's OSM archive along with it. The archive rides
-    // on the tile rather than being joined to the parent afterwards because a parent is identified
-    // by its z/x/y, not by a grid: this way the fan-in below collects exactly the archives of the
-    // grids that parent actually draws from.
+    // One item per rendered tile, keyed by its name for the join to its parent.
     ch_tile_vec = PULLAUTA_GRID.out.vectors
         .transpose()
-        .combine(ch_grid_shapes.map { grid_id, _csv, shapes -> tuple(grid_id, shapes) }, by: 0)
-        .map { _grid_id, bundle, shapes ->
-            tuple(bundle.name.replaceAll(/_vec$/, ''), bundle, shapes)
-        }
+        .map { _grid_id, bundle -> tuple(bundle.name.replaceAll(/_vec$/, ''), bundle) }
 
     // ---------------------------------------------------------------------
     // Tile
@@ -116,10 +113,6 @@ workflow {
     // that never reaches it -- so one tile that failed to render would silently delete every
     // web-mercator tile overlapping it, and the run would still report success. That is the exact
     // failure this pipeline exists to survive; tests/test_failure_injection.sh covers it.
-    //
-    // unique() on the archives: a parent takes one from every tile under it, and they repeat once
-    // per tile of the same grid. Two identical paths staged under one name is an error, and a
-    // hundred copies of the same archive would be staged either way.
     ch_parent_vec = PLAN_GRIDS.out.parent_index
         .splitCsv(header: true)
         .map { row ->
@@ -130,17 +123,11 @@ workflow {
             )
         }
         .combine(ch_tile_vec, by: 0)
-        .map { _tile, parent, n_core, bundle, shapes ->
-            tuple(groupKey(parent, n_core), bundle, shapes)
-        }
+        .map { _tile, parent, n_core, bundle -> tuple(groupKey(parent, n_core), bundle) }
         .groupTuple(remainder: true)
-        .map { key, bundles, shapes -> tuple(key.getGroupTarget(), bundles, shapes.unique()) }
+        .map { key, bundles -> tuple(key.getGroupTarget(), bundles) }
 
-    MAKE_VECTOR_TILES(
-        ch_parent_vec,
-        ch_ini,
-        file(params.vectorconf ?: "${projectDir}/assets/NONE")
-    )
+    MAKE_VECTOR_TILES(ch_parent_vec)
 
     // A vector tile carries classes, not colours, so the style is not a nicety the way a raster
     // viewer is: without it the pyramid cannot be drawn at all.

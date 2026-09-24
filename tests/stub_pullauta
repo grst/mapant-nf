@@ -19,8 +19,8 @@
 #                     tile (its .png gets no IEND chunk)
 #   STUB_FAIL_EARLY   if set, fail before touching any tile, as a bad ini or missing zip would
 #
-# With output_geojson=1 in the ini it also writes the per-tile vector outputs, in the same shapes
-# the real renderer does: one <t>.geojson and the four classified rasters with their world files.
+# With vectorvege=1 in the ini it also writes the per-tile vector outputs, named as the real
+# renderer names them: one <t>_<layer>.geojson per layer.
 set -euo pipefail
 
 readonly INI=pullauta.ini
@@ -79,11 +79,9 @@ for stem in "${todo[@]}"; do
     write_png "${outfolder}/${stem}_depr.png"
     write_pgw "${outfolder}/${stem}_depr.pgw"
 
-    if [ "$(ini_get output_geojson)" = '1' ]; then
-        printf '{"type":"FeatureCollection","features":[]}' > "${outfolder}/${stem}.geojson"
-        for name in vege_bit undergrowth_bit water_bit blocks_bit; do
-            write_png "${outfolder}/${stem}_${name}.png"
-            printf '1.0\n0.0\n0.0\n-1.0\n609000.5\n5285999.5\n' > "${outfolder}/${stem}_${name}.pgw"
+    if [ "$(ini_get vectorvege)" = '1' ]; then
+        for name in contours formlines dotknolls cliffs vegetation yellow undergrowth osm_lines osm_areas; do
+            printf '{"type":"FeatureCollection","features":[]}' > "${outfolder}/${stem}_${name}.geojson"
         done
     fi
 done

@@ -7,9 +7,12 @@
 # jsonschema and shapely are test-only: the first checks assets/schema_tiles.json, the second is the
 # independent geometry check on the halo that bin/plan_grids.py itself no longer needs.
 #
+# pillow for bin/make_vector_style.py, which draws the sprite.
+#
 #   python -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
 jsonschema==4.26.0
 mercantile==1.2.1
+pillow==12.3.0
 pyproj==3.7.2
 pytest==9.1.1
 shapely==2.1.2

@@ -246,3 +246,45 @@ def test_a_shape_is_drawn_as_the_isom_symbol_it_was_matched_to():
 
     # A bridge or tunnel section carries the same code with a T, and is the same symbol.
     assert mvs.codes_for("503") == ["503", "503T"]
+
+
+def test_every_image_the_style_names_is_in_the_sprite(tmp_path):
+    """
+    A fill pattern or icon the sprite does not have draws nothing, silently: the undergrowth
+    patterns are one per zoom, and the slope line is an icon.
+    """
+    mvs = style_module()
+    style = mvs.build_style(
+        tiles_url="tiles/{z}/{x}/{y}.pbf", base_zoom=13, max_zoom=16,
+        bounds=(10.0, 47.0, 11.0, 48.0), latitude=47.5, ini={}, title="t",
+    )
+    mvs.write_sprite(tmp_path, mvs.undergrowth_patterns(47.5, mvs.pattern_zooms(13, 16)))
+    for suffix in ("", "@2x"):
+        sprite = json.loads((tmp_path / f"sprite{suffix}.json").read_text())
+        named = set()
+
+        def collect(value):
+            if isinstance(value, str):
+                named.add(value)
+            elif isinstance(value, list):
+                for v in value[1:]:
+                    collect(v)
+
+        for layer in style["layers"]:
+            collect(layer.get("paint", {}).get("fill-pattern"))
+            collect(layer.get("layout", {}).get("icon-image"))
+        assert named, "the style names no images at all"
+        assert named <= set(sprite), sorted(named - set(sprite))
+
+
+def test_undergrowth_stripes_keep_their_ground_spacing():
+    """The pattern for each zoom puts the stripes as far apart on the ground as the PNG does."""
+    mvs = style_module()
+    patterns = mvs.undergrowth_patterns(47.5, range(15, 19))
+    for zoom in range(16, 19):
+        period, *_ = patterns[f"undergrowth-z{zoom}"]
+        ground = period / mvs.maplibre_pixels_per_metre(zoom, 47.5)
+        assert ground == pytest.approx(18.0, rel=0.1)
+        # and twice as dense for 409
+        dense, *_ = patterns[f"undergrowth-dense-z{zoom}"]
+        assert dense == pytest.approx(period / 2, abs=1)

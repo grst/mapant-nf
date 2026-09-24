@@ -41,7 +41,6 @@ METRES_PER_RENDER_PIXEL = 254.0 / 600.0
 
 # src/render.rs: the contour brown, and the default of `depressions_color`.
 BROWN = (166, 85, 43)
-PURPLE = (200, 0, 200)
 BLACK = (0, 0, 0)
 # src/palette.rs: open land, and the undergrowth green.
 YELLOW = (255, 219, 166)
@@ -105,6 +104,9 @@ ISOM_LINES: dict[str, IsomLine] = {
     # The edge of a paved area, and karttapullautin's generic black line.
     "529.1": IsomLine("501.1", ISOM_BLACK, 0.14),
     "414": IsomLine("516", ISOM_BLACK, 0.21),
+    # The edge karttapullautin draws round open land (its own 401.1): a distinct cultivation
+    # boundary, 0.14 mm.
+    "401.1": IsomLine("415", ISOM_BLACK, 0.14),
 }
 
 # The area fills, by the ISOM 2000 code karttapullautin matched. `pattern` names an image in the
@@ -197,18 +199,71 @@ def read_ini(path: Path | None) -> dict[str, str]:
 #: cannot scale a pattern with the zoom: this is a texture, and the period below is roughly what
 #: the symbol has on paper at the deepest zoom of the pyramid.
 PATTERNS: dict[str, tuple[int, int, str, tuple[int, int, int]]] = {
-    # ISOM 407, vegetation: slow running, good visibility -- a 0.18 mm stripe every 1.26 mm, so
-    # the green covers about a seventh of the area and reads as a texture over what is underneath
-    # rather than as a shade of its own.
-    "undergrowth": (7, 1, "vertical", UNDERGROWTH),
-    # ISOM 409, the same for walking speed, at half the spacing.
-    "undergrowth-dense": (3, 1, "vertical", UNDERGROWTH),
     # ISOM 308, marsh -- a 0.15 mm blue stripe every 0.45 mm, across the map.
     "marsh": (3, 1, "horizontal", KP_MARSH),
 }
 
 
-def write_sprite(out_dir: Path) -> None:
+#: The slope line icon, in pixels at the deepest zoom: a tick about 0.8 mm long on paper, hanging
+#: from a contour into the depression.
+SLOPE_TICK_SIZE = (6, 14)
+
+#: The contour classes that close around a depression, and so carry slope lines.
+DEPRESSION_CLASSES = [
+    "depression",
+    "depression_index",
+    "depression_intermed",
+    "depression_index_intermed",
+    "formline_depression",
+]
+
+
+#: The undergrowth stripes as karttapullautin draws them, in ground metres: a stripe on each edge
+#: of its 18 m cell for ISOM 407, and one more through the middle for 409.
+UNDERGROWTH_SPACING_M = {"undergrowth": 18.0, "undergrowth-dense": 9.0}
+UNDERGROWTH_STROKE_M = 0.85
+
+
+def maplibre_pixels_per_metre(zoom: int, latitude: float) -> float:
+    """Screen pixels per ground metre in MapLibre, whose zoom levels are 512 px tiles."""
+    import math
+
+    return (2**zoom) / (78271.51696402048 * math.cos(math.radians(latitude)))
+
+
+def undergrowth_patterns(latitude: float, zooms: range) -> dict[str, tuple[int, int, str, tuple]]:
+    """
+    One undergrowth pattern per zoom and density, `<name>-z<zoom>`.
+
+    A fill pattern is drawn in screen pixels at every zoom, so a single image would put the
+    stripes a fixed number of pixels apart -- ten times too dense when zoomed in, a grey wash when
+    zoomed out. The style switches between these by zoom instead, which keeps the stripes the
+    distance apart on the ground that the rendered map has them.
+    """
+    patterns = {}
+    for zoom in zooms:
+        ppm = maplibre_pixels_per_metre(zoom, latitude)
+        stroke = max(1, round(UNDERGROWTH_STROKE_M * ppm))
+        for name, spacing in UNDERGROWTH_SPACING_M.items():
+            period = min(256, max(stroke + 2, round(spacing * ppm)))
+            patterns[f"{name}-z{zoom}"] = (period, stroke, "vertical", UNDERGROWTH)
+    return patterns
+
+
+def pattern_by_zoom(name: str, zooms: range) -> list:
+    """A `fill-pattern` expression picking `name`'s pattern for the zoom (see above)."""
+    expression: list = ["step", ["zoom"], f"{name}-z{zooms[0]}"]
+    for zoom in zooms[1:]:
+        expression += [zoom, f"{name}-z{zoom}"]
+    return expression
+
+
+def pattern_zooms(base_zoom: int, max_zoom: int) -> range:
+    """The zooms the undergrowth patterns are drawn for, including a few overzoomed ones."""
+    return range(base_zoom, max_zoom + 4)
+
+
+def write_sprite(out_dir: Path, patterns: dict | None = None) -> None:
     """
     Write the sprite the patterned area symbols need, at both pixel ratios.
 
@@ -222,7 +277,7 @@ def write_sprite(out_dir: Path) -> None:
         boxes: dict[str, dict] = {}
         images = []
         offset = 0
-        for name, (period, stroke, direction, color) in PATTERNS.items():
+        for name, (period, stroke, direction, color) in {**PATTERNS, **(patterns or {})}.items():
             size = period * ratio
             image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
             pixels = image.load()
@@ -241,6 +296,25 @@ def write_sprite(out_dir: Path) -> None:
             }
             images.append(image)
             offset += size
+
+        # The slope line: a tick hanging from the middle of the icon. Placed along a contour, an
+        # icon's bottom is on the right of the line's direction, and karttapullautin writes
+        # every contour with its downhill side on the right -- so the tick points downhill.
+        width, height = SLOPE_TICK_SIZE
+        tick = Image.new("RGBA", (width * ratio, height * ratio), (0, 0, 0, 0))
+        tick_pixels = tick.load()
+        for along in range((height // 2) * ratio, height * ratio):
+            for across in range((width // 2 - 1) * ratio, (width // 2 + 1) * ratio):
+                tick_pixels[across, along] = (*BROWN, 255)
+        boxes["slope-tick"] = {
+            "width": tick.width,
+            "height": tick.height,
+            "x": offset,
+            "y": 0,
+            "pixelRatio": ratio,
+        }
+        images.append(tick)
+        offset += tick.width
 
         sheet = Image.new("RGBA", (offset, max(i.height for i in images)), (0, 0, 0, 0))
         position = 0
@@ -337,8 +411,6 @@ def build_style(
     )
     building = ini.get("buildingcolor", "0,0,0").split(",")
     building_color = tuple(int(c) for c in building) if len(building) == 3 else BLACK
-    depressions = ini.get("depressions_color", "200,0,200").split(",")
-    depression_color = tuple(int(c) for c in depressions) if len(depressions) == 3 else PURPLE
 
     def width(metres: float) -> list:
         return width_expression(metres, latitude, base_zoom, max_zoom)
@@ -397,7 +469,7 @@ def build_style(
             "source": "mapant",
             "source-layer": "undergrowth",
             "filter": ["==", ["get", "isom"], code],
-            "paint": {"fill-pattern": name},
+            "paint": {"fill-pattern": pattern_by_zoom(name, pattern_zooms(base_zoom, max_zoom))},
         }
         for code, name in (("407", "undergrowth"), ("409", "undergrowth-dense"))
     ]
@@ -425,37 +497,27 @@ def build_style(
             "paint": {"line-color": rgb(BROWN), "line-width": width(brush_metres(3.5))},
         },
         {
+            # ISOM has no depression colour: a depression is a contour like any other, told
+            # apart by the slope lines hanging into it (below). The rendered map draws them in
+            # `depressions_color` instead; this is the symbol a printed map carries.
             "id": "depressions",
             "type": "line",
             "source": "mapant",
             "source-layer": "contours",
-            "filter": ["in", ["get", "layer"], ["literal", ["depression", "slope_line"]]],
-            "paint": {
-                "line-color": rgb(depression_color),
-                "line-width": width(brush_metres(2.0)),
-            },
+            "filter": ["in", ["get", "layer"], ["literal", ["depression", "depression_intermed"]]],
+            "paint": {"line-color": rgb(BROWN), "line-width": width(brush_metres(2.0))},
         },
         {
             "id": "depressions-index",
             "type": "line",
             "source": "mapant",
             "source-layer": "contours",
-            "filter": ["==", ["get", "layer"], "depression_index"],
-            "paint": {
-                "line-color": rgb(depression_color),
-                "line-width": width(brush_metres(3.5)),
-            },
-        },
-        {
-            "id": "small-depressions",
-            "type": "line",
-            "source": "mapant",
-            "source-layer": "contours",
-            "filter": ["==", ["get", "layer"], "small_depression"],
-            "paint": {
-                "line-color": rgb(depression_color),
-                "line-width": width(brush_metres(3.0)),
-            },
+            "filter": [
+                "in",
+                ["get", "layer"],
+                ["literal", ["depression_index", "depression_index_intermed"]],
+            ],
+            "paint": {"line-color": rgb(BROWN), "line-width": width(brush_metres(3.5))},
         },
         {
             "id": "formlines",
@@ -463,39 +525,61 @@ def build_style(
             "source": "mapant",
             "source-layer": "formlines",
             "paint": {
-                "line-color": [
-                    "match",
-                    ["get", "layer"],
-                    "formline_depression",
-                    rgb(depression_color),
-                    rgb(BROWN),
-                ],
+                "line-color": rgb(BROWN),
                 "line-width": width(brush_metres(1.5)),
                 # In multiples of the line width, which is how the spec measures a dash.
                 "line-dasharray": [6.0, 1.5],
             },
         },
+        *[
+            {
+                # ISOM 101.1, slope line: karttapullautin writes every contour with its downhill
+                # side on the right, and the tick in the sprite hangs to the right of the line,
+                # so on a depression it points into the hollow.
+                "id": f"slope-lines-{source_layer}",
+                "metadata": {"isom:symbol": "101.1"},
+                "type": "symbol",
+                "source": "mapant",
+                "source-layer": source_layer,
+                "filter": ["in", ["get", "layer"], ["literal", DEPRESSION_CLASSES]],
+                "layout": {
+                    "symbol-placement": "line",
+                    # about every 50 m of ground, whatever the zoom
+                    "symbol-spacing": [
+                        "interpolate", ["exponential", 2], ["zoom"],
+                        max_zoom - 2, 8, max_zoom, 30, max_zoom + 2, 120,
+                    ],
+                    "icon-image": "slope-tick",
+                    "icon-size": [
+                        "interpolate", ["exponential", 2], ["zoom"],
+                        max_zoom - 2, 0.25, max_zoom, 1, max_zoom + 2, 4,
+                    ],
+                    "icon-rotation-alignment": "map",
+                    "icon-keep-upright": False,
+                    "icon-allow-overlap": True,
+                    "icon-ignore-placement": True,
+                },
+            }
+            for source_layer in ("contours", "formlines")
+        ],
         {
             "id": "knolls",
             "type": "circle",
             "source": "mapant",
             "source-layer": "dotknolls",
             "paint": {
-                "circle-color": [
-                    "match",
-                    ["get", "layer"],
-                    ["udepression", "uglyudepression"],
-                    rgb(depression_color),
-                    rgb(BROWN),
-                ],
+                "circle-color": rgb(BROWN),
                 "circle-radius": width(render_px_metres(7.0) / 2.0),
             },
         },
         {
+            # karttapullautin's cliff dashes, stroked the way it strokes them: six render
+            # pixels wide with round ends, so that a dense face merges into solid rock.
             "id": "cliffs",
             "type": "line",
             "source": "mapant",
             "source-layer": "cliffs",
+            "layout": {"line-cap": "round"},
             "paint": {"line-color": rgb(BLACK), "line-width": width(render_px_metres(6.0))},
         },
     ]
@@ -671,7 +755,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     (args.out_dir / "style.json").write_text(json.dumps(style, indent=1) + "\n")
-    write_sprite(args.out_dir)
+    write_sprite(
+        args.out_dir,
+        undergrowth_patterns(lat, pattern_zooms(args.base_zoom, args.max_zoom)),
+    )
 
     # What a renderer needs before it will accept a bare directory of tiles as a source, and what
     # `pack_pmtiles` copies into the archive's header.

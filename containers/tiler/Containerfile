@@ -56,11 +56,13 @@ COPY --from=tippecanoe /usr/local/bin/tile-join /usr/local/bin/tile-join
 # (nothing would trigger a rebuild). Bumping a line here is what publishes a new image.
 #
 # The tiler no longer reads the data -- karttapullautin's GeoJSON goes to tippecanoe as it is -- so
-# what is left is mercantile for the tile arithmetic and pyproj for bin/plan_grids.py.
+# what is left is mercantile for the tile arithmetic, pyproj for bin/plan_grids.py and pillow for
+# the sprite bin/make_vector_style.py draws.
 RUN pip install --no-cache-dir \
       "mercantile==1.2.1" \
+      "pillow==12.3.0" \
       "pyproj==3.7.2" \
- && python -c "import pyproj, mercantile" \
+ && python -c "import pyproj, mercantile, PIL" \
  && tippecanoe --version
 
 CMD ["/bin/bash"]

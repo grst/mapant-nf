@@ -60,7 +60,7 @@ class Layer:
 OSM_LEVELS: dict[str, int] = {
     "306": ALL_ZOOMS,  # watercourse
     "301": ALL_ZOOMS,  # lake
-    "301.1": ALL_ZOOMS,  # lake bank line
+    "301.1": ALL_ZOOMS,  # lake bank line (karttapullautin's outline of a 301 area)
     "502": ALL_ZOOMS,  # wide road
     "502T": ALL_ZOOMS,
     "503": ALL_ZOOMS,  # large road
@@ -71,6 +71,7 @@ OSM_LEVELS: dict[str, int] = {
     "505T": ALL_ZOOMS,
     "515": ALL_ZOOMS,  # railway
     "401": ALL_ZOOMS,  # open land
+    "401.1": ALL_ZOOMS,  # its edge
     "310": ALL_ZOOMS,  # marsh
     "527": ALL_ZOOMS,  # settlement
     "529": 1,  # paved area

@@ -8,7 +8,10 @@
         "input_output": {
             "title": "Input and output",
             "type": "object",
-            "required": ["tiles_csv", "outdir"],
+            "required": [
+                "tiles_csv",
+                "outdir"
+            ],
             "properties": {
                 "tiles_csv": {
                     "type": "string",
@@ -37,7 +40,7 @@
                     "type": "string",
                     "format": "file-path",
                     "exists": true,
-                    "description": "karttapullautin shape mapping file (osm.txt) translating OSM tags to map symbols."
+                    "description": "Shape mapping file (osm.txt) translating OSM tags to ISOM map symbols."
                 },
                 "outdir": {
                     "type": "string",
@@ -48,7 +51,12 @@
                 "publish_mode": {
                     "type": "string",
                     "default": "copy",
-                    "enum": ["copy", "link", "symlink", "rellink"],
+                    "enum": [
+                        "copy",
+                        "link",
+                        "symlink",
+                        "rellink"
+                    ],
                     "description": "How published files leave the work directory.",
                     "help_text": "'copy' works everywhere including object stores. 'link' (hardlink) is far cheaper for the millions of small files a large run produces, but needs outdir and workDir on one filesystem. Never use 'move': it breaks -resume."
                 },
@@ -104,7 +112,10 @@
                 "png_variant": {
                     "type": "string",
                     "default": "depr",
-                    "enum": ["depr", "plain"],
+                    "enum": [
+                        "depr",
+                        "plain"
+                    ],
                     "description": "Which karttapullautin render to tile: with ('depr') or without depression markings.",
                     "help_text": "Keeping only one halves the intermediate storage of a large run (~90 GB rather than ~175 GB for Bavaria)."
                 }
@@ -154,7 +165,11 @@
                 "osm_strategy": {
                     "type": "string",
                     "default": "smart",
-                    "enum": ["simple", "complete_ways", "smart"],
+                    "enum": [
+                        "simple",
+                        "complete_ways",
+                        "smart"
+                    ],
                     "description": "osmium extract strategy.",
                     "help_text": "'smart' keeps ways and multipolygon relations whole, so a lake or road crossing the boundary still renders as one object. 'simple' is faster but cuts them."
                 }
@@ -179,23 +194,28 @@
                     "maximum": 22,
                     "description": "Deepest zoom level to generate.",
                     "help_text": "z18 is about 0.4 m/px at central-European latitudes, which matches karttapullautin's 0.4233 m/px output. Each extra level quadruples the file count: ~8.8 M tiles for Bavaria at z18 against ~2.2 M at z17."
-                },
-                "tile_format": {
-                    "type": "string",
-                    "default": "webp",
-                    "enum": ["webp", "png"],
-                    "description": "Image format of the published tiles; both are lossless.",
-                    "help_text": "WebP is smaller than PNG at identical pixels -- 23% measured by tiling one render both ways; upstream quotes ~25%. Choose 'png' only for a consumer that cannot read WebP; every browser released since 2020 can. The published extension follows the format, and so does the generated viewer."
                 }
             }
         }
     },
     "allOf": [
-        { "$ref": "#/$defs/input_output" },
-        { "$ref": "#/$defs/region" },
-        { "$ref": "#/$defs/grids" },
-        { "$ref": "#/$defs/download" },
-        { "$ref": "#/$defs/osm" },
-        { "$ref": "#/$defs/tiles" }
+        {
+            "$ref": "#/$defs/input_output"
+        },
+        {
+            "$ref": "#/$defs/region"
+        },
+        {
+            "$ref": "#/$defs/grids"
+        },
+        {
+            "$ref": "#/$defs/download"
+        },
+        {
+            "$ref": "#/$defs/osm"
+        },
+        {
+            "$ref": "#/$defs/tiles"
+        }
     ]
 }

@@ -148,10 +148,9 @@ def require_single_crs(tiles: list[Tile]) -> str:
     Refuse input that mixes coordinate reference systems.
 
     karttapullautin compares raw header coordinates when it decides which files overlap a tile, so
-    mixing UTM zones inside one grid produces garbage rather than an error. Supporting a multi-zone
-    dataset needs a warp step (each foreign-CRS render reprojected onto the target lattice *before*
-    tiling, because k2t writes opaque white for nodata and two runs cannot be alpha-composited);
-    that is not implemented, so this fails loudly instead.
+    mixing UTM zones inside one grid produces garbage rather than an error. A multi-zone dataset
+    would also need the CRS to travel with the pyramid, since the tiler is told one per parent and
+    the OCD export reads it back; that is not implemented, so this fails loudly instead.
     """
     counts = Counter(t.crs for t in tiles)
     if len(counts) == 1:
@@ -172,7 +171,7 @@ def derive_lonlat(tiles: list[Tile]) -> None:
     `transform_bounds(densify_pts=...)` rather than transforming the four corners: a UTM box's
     edges are curves in lon/lat, so the corner-only envelope is *smaller* than the true one. Tiles
     would then be assigned to fewer web-mercator parents than they cover, which shows up as seams
-    in the finished map. Erring large is free -- k2t re-filters with exact geometry.
+    in the finished map. Erring large is free -- the tiler clips to the parent's exact bounds.
 
     Grouped by CRS because this runs before the single-CRS check: a multi-zone national dataset is
     only rejected once the region filter has had its chance to narrow the selection.

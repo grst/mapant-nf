@@ -15,14 +15,16 @@
 %% progress overlay:  nf-metro serve docs/metro_map.mmd  +  nextflow run . -with-weblog <url>
 %%
 %% Lines are the pipeline's four routes, not its dataflow edges: what is optional (osm), what is
-%% configuration (ini) and what bypasses the render entirely (viewer) is the thing worth seeing.
+%% configuration (ini) and what bypasses the render entirely (viewer, and now osm too) is the thing
+%% worth seeing. The osm line running past the render section without stopping is the point of the
+%% picture: the shapes are no longer drawn into the map, they are cut into it.
 
 %%metro title: mapant
 %%metro style: nfcore
 %%metro legend: bl
 
 %%metro line: lidar | LiDAR tiles to map pyramid | #24b064
-%%metro line: osm | OSM vectors (optional: --osm_pbf) | #3f7fd6
+%%metro line: osm | OSM shapes (optional: --osm_pbf) | #3f7fd6
 %%metro line: ini | Renderer configuration | #e6a817 | dashed
 %%metro line: viewer | Viewer, built from the plan | #9a6fb0 | dotted
 
@@ -31,7 +33,7 @@
 %%metro file: pullauta_ini | INI
 %%metro files: laz_in | LAZ
 %%metro files: qc_out | TSV
-%%metro dir: tiles_out | WEBP
+%%metro dir: tiles_out | PBF
 %%metro file: viewer_out | HTML
 
 %%metro off_track: qc_out
@@ -41,8 +43,8 @@
 %%metro process: OSM_EXTRACT | OSM_EXTRACT
 %%metro process: OSM_TO_SHAPES | OSM_TO_SHAPES
 %%metro process: PULLAUTA_GRID | PULLAUTA_GRID
-%%metro process: MAKE_TILES | MAKE_TILES
-%%metro process: TILE_VIEWER | TILE_VIEWER
+%%metro process: MAKE_VECTOR_TILES | MAKE_VECTOR_TILES
+%%metro process: VECTOR_VIEWER | VECTOR_VIEWER
 
 graph LR
     subgraph plan ["Plan (once per run)"]
@@ -56,7 +58,18 @@ graph LR
         pullauta_ini -->|ini| RENDER_INI
     end
 
-    subgraph vectors ["OSM vectors (per grid)"]
+    subgraph render ["Render (per grid)"]
+        %%metro entry: left | lidar, ini
+        %%metro exit: right | lidar
+        laz_in[ ]
+        PULLAUTA_GRID[PULLAUTA_GRID]
+        qc_out[ ]
+
+        laz_in -->|lidar| PULLAUTA_GRID
+        PULLAUTA_GRID -->|lidar| qc_out
+    end
+
+    subgraph vectors ["OSM shapes (per grid)"]
         %%metro entry: left | osm
         %%metro exit: right | osm
         osm_pbf[ ]
@@ -67,32 +80,21 @@ graph LR
         OSM_EXTRACT -->|osm| OSM_TO_SHAPES
     end
 
-    subgraph render ["Render (per grid)"]
-        %%metro entry: left | lidar, osm, ini
-        %%metro exit: right | lidar
-        laz_in[ ]
-        PULLAUTA_GRID[PULLAUTA_GRID]
-        qc_out[ ]
-
-        laz_in -->|lidar| PULLAUTA_GRID
-        PULLAUTA_GRID -->|lidar| qc_out
-    end
-
     subgraph tile ["Tile (per parent tile)"]
-        %%metro entry: left | lidar, viewer
-        MAKE_TILES[MAKE_TILES]
-        TILE_VIEWER[TILE_VIEWER]
+        %%metro entry: left | osm, lidar, viewer
+        MAKE_VECTOR_TILES[MAKE_VECTOR_TILES]
+        VECTOR_VIEWER[VECTOR_VIEWER]
         tiles_out[ ]
         viewer_out[ ]
 
-        MAKE_TILES -->|lidar| tiles_out
-        TILE_VIEWER -->|viewer| viewer_out
+        MAKE_VECTOR_TILES -->|lidar| tiles_out
+        VECTOR_VIEWER -->|viewer| viewer_out
     end
 
     %% Inter-section edges
     PLAN_GRIDS -->|osm| OSM_EXTRACT
-    OSM_TO_SHAPES -->|osm| PULLAUTA_GRID
+    OSM_TO_SHAPES -->|osm| MAKE_VECTOR_TILES
     PLAN_GRIDS -->|lidar| PULLAUTA_GRID
     RENDER_INI -->|ini| PULLAUTA_GRID
-    PULLAUTA_GRID -->|lidar| MAKE_TILES
-    PLAN_GRIDS -->|viewer| TILE_VIEWER
+    PULLAUTA_GRID -->|lidar| MAKE_VECTOR_TILES
+    PLAN_GRIDS -->|viewer| VECTOR_VIEWER

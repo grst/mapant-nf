@@ -1,0 +1,73 @@
+# The tiler: tippecanoe, and the Python everything in bin/ needs.
+#
+# It used to be the karttapullautin2tiles image -- the raster pyramid's tiler -- and carried that
+# package's dependency set because bin/*.py happened to need the same one. The pyramid is vector
+# now, cut by tippecanoe from GeoJSON, so k2t is gone and the dependencies are pinned here
+# explicitly, which is what this repository's rebuild-on-context-hash rule asks for anyway.
+#
+# python:3.13-slim, not 3.14: numpy, rasterio, pyproj and shapely publish manylinux wheels for
+# cp313, and a missing wheel here turns a 30-second image build into a from-source GDAL compile.
+FROM docker.io/library/python:3.13-slim AS tippecanoe
+
+# Built rather than installed from Debian: trixie has 2.53 and bookworm has none, and a version
+# that moves with the base image is a version that is not pinned.
+ARG TIPPECANOE_VERSION=2.78.0
+
+# APT::Sandbox::User=root: see containers/build.sh.
+RUN apt-get -o APT::Sandbox::User=root update \
+ && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
+      build-essential \
+      ca-certificates \
+      git \
+      libsqlite3-dev \
+      zlib1g-dev \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch "${TIPPECANOE_VERSION}" https://github.com/felt/tippecanoe.git /src \
+ && make -C /src -j"$(nproc)" \
+ && make -C /src install
+
+
+FROM docker.io/library/python:3.13-slim
+
+# procps: Nextflow shells out to `ps` for task metrics and fails the task without it.
+#
+# libexpat1: rasterio's manylinux wheel links libexpat.so.1 (via its bundled GDAL) but does not
+# vendor it, and python:*-slim is minimal enough not to have it. Without this, every rasterio
+# import -- so every tiling task -- dies with
+#     ImportError: libexpat.so.1: cannot open shared object file
+# which is a runtime failure the pip install step reports as success.
+#
+# libsqlite3-0: tippecanoe links it, and the -dev package it was built against is in the other
+# stage.
+RUN apt-get -o APT::Sandbox::User=root update \
+ && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
+      libexpat1 \
+      libsqlite3-0 \
+      procps \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=tippecanoe /usr/local/bin/tippecanoe /usr/local/bin/tippecanoe
+COPY --from=tippecanoe /usr/local/bin/tile-join /usr/local/bin/tile-join
+
+# Pinned, and pinned here rather than left to resolve at build time, because CI decides whether this
+# image needs rebuilding from the hash of this directory: an unpinned dependency would mean the same
+# hash could produce different images, and that the newer version would never be picked up anyway
+# (nothing would trigger a rebuild). Bumping a line here is what publishes a new image.
+#
+# shapely 2.1 or newer: bin/make_vector_tiles.py generalises area boundaries with the coverage
+# simplifier, which arrived there. Older, and every traced boundary keeps a vertex per pixel corner.
+RUN pip install --no-cache-dir \
+      "mercantile==1.2.1" \
+      "numpy==2.5.3" \
+      "pillow==12.3.0" \
+      "pyproj==3.7.2" \
+      "pyshp==3.1.6" \
+      "rasterio==1.5.1" \
+      "shapely==2.1.2" \
+ && python -c "import shapely, pyproj, mercantile, rasterio, shapefile, PIL; \
+assert hasattr(shapely, 'coverage_simplify'), 'shapely is too old for the coverage simplifier'; \
+print('shapely', shapely.__version__)" \
+ && tippecanoe --version
+
+CMD ["/bin/bash"]

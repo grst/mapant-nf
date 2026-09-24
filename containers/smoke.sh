@@ -3,7 +3,7 @@
 #
 # Run by CI on every image it builds, and usable by hand against a local build:
 #
-#   containers/smoke.sh k2t                                   # localhost/mapant/k2t:latest
+#   containers/smoke.sh tiler                                 # localhost/mapant/tiler:latest
 #   containers/smoke.sh karttapullautin ghcr.io/grst/mapant-nf/karttapullautin:2.13.0
 #
 # These are not unit tests for the tools; they are checks for the handful of things that have gone
@@ -123,9 +123,15 @@ case "$NAME" in
         check 'osmium extract is available' run osmium extract --help
         ;;
 
-    k2t)
-        check 'k2t runs' run k2t --help
-        check 'make-tiles is available' run k2t make-tiles --help
+    tiler)
+        check 'tippecanoe runs' run tippecanoe --version
+        # Each of these has been the cause of a task that failed for an unrelated-looking reason:
+        # rasterio's missing libexpat, and a shapely too old for the coverage simplifier -- which
+        # does not fail, it just quietly leaves a vertex per pixel corner on every area boundary.
+        check 'the tiler python imports' run python -c \
+            'import shapely, pyproj, mercantile, rasterio, shapefile, PIL'
+        check 'shapely can simplify a coverage' run python -c \
+            'import shapely; assert hasattr(shapely, "coverage_simplify")'
         # rasterio's wheel links libexpat but does not vendor it, and python:slim does not have it.
         # Importing is the only way to find out; pip install reports success either way. This image is
         # also the generic Python image, so these are what bin/*.py needs too.

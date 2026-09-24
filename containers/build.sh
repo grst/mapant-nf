@@ -3,7 +3,7 @@
 #
 # Usage:
 #   containers/build.sh                  # build all images
-#   containers/build.sh k2t gdal         # build a subset
+#   containers/build.sh tiler gdal         # build a subset
 #   REGISTRY=ghcr.io/you containers/build.sh --push
 #   containers/build.sh --manifest       # print names/tags/build-args as JSON (used by CI)
 #
@@ -11,7 +11,7 @@
 # ones built here, override the selectors in a config of your own:
 #
 #   process {
-#       withName: 'PLAN_GRIDS|RENDER_INI|MAKE_TILES|TILE_VIEWER' { container = 'mapant/k2t:latest' }
+#       withName: 'PLAN_GRIDS|RENDER_INI|MAKE_VECTOR_TILES|VECTOR_VIEWER' { container = 'mapant/tiler:latest' }
 #       withName: PULLAUTA_GRID { container = 'mapant/karttapullautin:latest' }
 #       withName: OSM_EXTRACT   { container = 'mapant/osmium:latest' }
 #       withName: OSM_TO_SHAPES { container = 'mapant/gdal:latest' }
@@ -59,7 +59,7 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REGISTRY="${REGISTRY:-mapant}"
-readonly ALL_IMAGES=(karttapullautin gdal osmium k2t)
+readonly ALL_IMAGES=(karttapullautin gdal osmium tiler)
 
 # The upstream karttapullautin release to build, read out of the Containerfile's own ARG default
 # rather than repeated here: the version is part of the image's build inputs, and CI decides whether
@@ -78,7 +78,7 @@ declare -rA TAGS=(
     [karttapullautin]="${PULLAUTA_TAG#v}"
     [gdal]='latest'
     [osmium]='latest'
-    [k2t]='latest'
+    [tiler]='latest'
 )
 
 # Image name -> build args, as `--build-arg` KEY=VALUE pairs. Read by the build loop below and

@@ -24,7 +24,6 @@ readonly WORK="${SCRATCH}/work"
 # change to the profile shows up as a failing assertion instead of silently weakening the test.
 readonly EXPECT_GRIDS=2
 readonly BASE_ZOOM=13
-readonly TILE_FORMAT=webp
 
 cd "$REPO"
 rm -rf "$SCRATCH"
@@ -97,9 +96,9 @@ awk -F, 'NR > 1 { print $3 "/" $4 "/" $5 }' "${OUT}/pipeline_info/parent_tiles.c
 # directory would abort the script here, turning the most informative assertion in the file into an
 # unexplained exit.
 : > "${SCRATCH}/published_parents"
-if [ -d "${OUT}/tiles/${BASE_ZOOM}" ]; then
-    find "${OUT}/tiles/${BASE_ZOOM}" -name "*.${TILE_FORMAT}" \
-        | sed -e "s|^${OUT}/tiles/||" -e "s|\.${TILE_FORMAT}\$||" \
+if [ -d "${OUT}/tiles_vector/${BASE_ZOOM}" ]; then
+    find "${OUT}/tiles_vector/${BASE_ZOOM}" -name '*.pbf' \
+        | sed -e "s|^${OUT}/tiles_vector/||" -e 's|\.pbf$||' \
         | sort -u > "${SCRATCH}/published_parents"
 fi
 check 'planned and published parent tiles are the same set' \
@@ -114,19 +113,22 @@ check 'more than one parent tile was produced' \
 # and one level under it, so both must be published and no shallower level may appear.
 echo '==> the pyramid starts at the base zoom'
 for z in "$BASE_ZOOM" "$((BASE_ZOOM + 1))"; do
-    check "zoom ${z} is present" test -d "${OUT}/tiles/${z}"
+    check "zoom ${z} is present" test -d "${OUT}/tiles_vector/${z}"
 done
 check 'nothing was published below the base zoom' \
-    test ! -d "${OUT}/tiles/$((BASE_ZOOM - 1))"
-check 'the viewer was published' test -s "${OUT}/tiles/index.html"
-check 'the viewer starts the pyramid at the base zoom' \
-    grep -q "minZoom: ${BASE_ZOOM}" "${OUT}/tiles/index.html"
+    test ! -d "${OUT}/tiles_vector/$((BASE_ZOOM - 1))"
+
+# A vector tile carries classes, not colours: without the style there is nothing to look at, so it
+# is part of the pyramid rather than a convenience alongside it.
+echo '==> the style and the viewer'
+check 'the style was published' test -s "${OUT}/tiles_vector/style.json"
+check 'the sprite was published' test -s "${OUT}/tiles_vector/sprite.png"
+check 'metadata.json was published' test -s "${OUT}/tiles_vector/metadata.json"
+check 'the viewer was published' test -s "${OUT}/tiles_vector/index.html"
+check 'the style starts the pyramid at the base zoom' \
+    grep -q "\"minzoom\": ${BASE_ZOOM}" "${OUT}/tiles_vector/style.json"
 check 'the viewer falls back to OSM below it' \
-    grep -q 'tile.openstreetmap.org' "${OUT}/tiles/index.html"
-# The viewer hardcodes the tile extension, so it drifts silently from what MAKE_TILES publishes --
-# a blank map with a console full of 404s, and every other assertion here still green.
-check 'the viewer asks for the extension that was published' \
-    grep -q "'{z}/{x}/{y}.${TILE_FORMAT}'" "${OUT}/tiles/index.html"
+    grep -q 'tile.openstreetmap.org' "${OUT}/tiles_vector/index.html"
 
 echo '==> QC reporting'
 # Header-only: a stub run has no failures, and a QC file that is empty rather than header-only means

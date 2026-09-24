@@ -15,13 +15,10 @@ process RENDER_INI {
     path 'effective.ini', emit: ini
 
     script:
-    // Empty vectorconf disables vector rendering, which is what a region with no OSM extract needs.
-    def vectorconf = params.osm_pbf ? 'osm.txt' : ''
     """
     render_ini.py \\
         --in-ini user.ini \\
         --out-ini effective.ini \\
-        --processes ${processes} \\
-        --vectorconf '${vectorconf}'
+        --processes ${processes}
     """
 }

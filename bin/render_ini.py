@@ -22,6 +22,17 @@ from pathlib import Path
 #   karttapullautin never does. Extra outputs would be pruned moments later.
 # experimental_use_in_memory_fs: copies every input laz into RAM, which at ~200 MB per tile and a
 #   hundred tiles per grid is not survivable.
+# output_geojson: the per-tile vectors MAKE_VECTOR_TILES cuts the pyramid from.
+# vege_bitmode: the classified rasters for the layers that have no vector form -- vegetation,
+#   undergrowth, water and blocks. Without it those four layers are simply missing from the tiles.
+# output_dxf: off, because it is on in most inis (including this pipeline's own asset) and writes a
+#   second, text copy of every vector -- ~50 MB per tile against the GeoJSON's ~25 MB -- that
+#   nothing downstream reads.
+# vectorconf: empty, which is what turns karttapullautin's shapefile rendering off. The OSM shapes
+#   are matched and cut in MAKE_VECTOR_TILES now, so drawing them onto an image nothing reads would
+#   be a whole extra canvas pass for nothing.
+#
+# None of it is conditional: a vector pyramid is the only thing this pipeline builds.
 #
 # Writing batch, processes, savetempfiles and savetempfolders unconditionally also guarantees they
 # exist: karttapullautin reads those four with .unwrap(), so an absent one is a panic rather than a
@@ -33,6 +44,10 @@ OWNED = {
     "savetempfiles": "0",
     "savetempfolders": "0",
     "experimental_use_in_memory_fs": "0",
+    "output_geojson": "1",
+    "vege_bitmode": "1",
+    "output_dxf": "0",
+    "vectorconf": "",
 }
 
 
@@ -55,12 +70,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--in-ini", type=Path, required=True)
     ap.add_argument("--out-ini", type=Path, required=True)
     ap.add_argument("--processes", type=int, required=True)
-    ap.add_argument(
-        "--vectorconf",
-        default="",
-        help="shape mapping file; empty disables vector rendering, which is what a laz-only "
-        "region (no OSM pbf) needs",
-    )
     args = ap.parse_args(argv)
 
     if not args.in_ini.is_file():
@@ -73,14 +82,13 @@ def main(argv: list[str] | None = None) -> int:
     conf = read_ini(args.in_ini)
     conf.update(OWNED)
     conf["processes"] = str(args.processes)
-    conf["vectorconf"] = args.vectorconf
 
     # No section header on output: karttapullautin reads rust-ini's general_section(), so a
     # `[pullauta]` line would hide every key below it. Comments do not survive the round trip; the
     # values, which are what makes a render reproducible, all do.
     args.out_ini.write_text("".join(f"{key} = {value}\n" for key, value in conf.items()))
 
-    for key in sorted({*OWNED, "processes", "vectorconf", "contour_interval", "formline"}):
+    for key in sorted({*OWNED, "processes", "contour_interval", "formline"}):
         print(f"  {key:32s} {conf.get(key)}")
     return 0
 

@@ -18,6 +18,9 @@
 #   STUB_TRUNCATE     stem to leave half-written before crashing, simulating the abandoned in-flight
 #                     tile (its .png gets no IEND chunk)
 #   STUB_FAIL_EARLY   if set, fail before touching any tile, as a bad ini or missing zip would
+#
+# With output_geojson=1 in the ini it also writes the per-tile vector outputs, in the same shapes
+# the real renderer does: one <t>.geojson and the four classified rasters with their world files.
 set -euo pipefail
 
 readonly INI=pullauta.ini
@@ -75,6 +78,14 @@ for stem in "${todo[@]}"; do
     write_pgw "${outfolder}/${stem}.pgw"
     write_png "${outfolder}/${stem}_depr.png"
     write_pgw "${outfolder}/${stem}_depr.pgw"
+
+    if [ "$(ini_get output_geojson)" = '1' ]; then
+        printf '{"type":"FeatureCollection","features":[]}' > "${outfolder}/${stem}.geojson"
+        for name in vege_bit undergrowth_bit water_bit blocks_bit; do
+            write_png "${outfolder}/${stem}_${name}.png"
+            printf '1.0\n0.0\n0.0\n-1.0\n609000.5\n5285999.5\n' > "${outfolder}/${stem}_${name}.pgw"
+        done
+    fi
 done
 
 echo 'All done!'

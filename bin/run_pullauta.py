@@ -26,7 +26,9 @@ from __future__ import annotations
 import argparse
 import configparser
 import csv
+import gzip
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -41,6 +43,10 @@ FAILURE_COLUMNS = (
 # "the process was killed while writing this tile" -- which matters because pullauta's own resume
 # logic only tests for the file's existence.
 IEND = bytes.fromhex("49454e44ae426082")
+
+# The classified rasters karttapullautin writes per tile for the layers that exist only as pixels.
+# Together with <t>.geojson they are what a vector bundle holds.
+VECTOR_RASTERS = ("_vege_bit", "_undergrowth_bit", "_water_bit", "_blocks_bit")
 
 RENDERED_TILE_RE = re.compile(r"(\S+\.la[sz]) -> ")
 PANIC_RE = re.compile(r"panicked at|^Error|^thread ")
@@ -248,7 +254,69 @@ class Renderer:
             if path.is_file() and not self.wanted(path):
                 path.unlink()
 
+    def is_vector_artifact(self, path: Path) -> bool:
+        """A file belonging to a tile's vector output rather than to its rendered image."""
+        if path.suffix == ".geojson":
+            return True
+        return path.suffix in (".png", ".pgw") and path.stem.endswith(VECTOR_RASTERS)
+
+    def bundle_vectors(self) -> None:
+        """
+        Gather each core tile's vector output into one `out/<stem>_vec/` directory.
+
+        One directory per tile rather than a dozen loose files, so the pipeline has a single path to
+        group by parent tile -- the same shape as the (png, pgw) pair the raster path groups.
+
+        The GeoJSON is gzipped on the way in. It is the largest thing a grid leaves behind (~25 MB
+        for a km2 of alpine cliffs, ~4 MB compressed) and it only has to live until the parent tiles
+        covering it have been cut, so paying compression here keeps the waiting set below the
+        raster path's.
+        """
+        for stem in self.core:
+            if stem in self.blacklisted:
+                continue
+            members = [
+                path
+                for path in self.out.glob(f"{stem}*")
+                if path.is_file() and self.is_vector_artifact(path)
+            ]
+            if not members:
+                continue
+
+            bundle = self.out / f"{stem}_vec"
+            bundle.mkdir(exist_ok=True)
+            for path in members:
+                if path.suffix == ".geojson":
+                    with path.open("rb") as src, gzip.open(bundle / f"{path.name}.gz", "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    path.unlink()
+                else:
+                    path.rename(bundle / path.name)
+
+        # Anything left loose belongs to no core tile (a halo tile that was rendered before it was
+        # blacklisted, say) and must not reach the publish step.
+        for path in self.out.iterdir():
+            if path.is_file() and self.is_vector_artifact(path):
+                path.unlink()
+
+    def discard_images(self) -> None:
+        """
+        Delete the rendered images, once the bundles are made.
+
+        They are how this script knows a tile finished -- a PNG closed with an IEND chunk -- and how
+        karttapullautin knows not to render it again, so they cannot go earlier than this. But
+        nothing downstream reads them since the pyramid became vector-only, and a task directory
+        holds ~1.5 MB per tile: at Bavaria's 72k tiles that is a hundred gigabytes of work
+        directories kept alive for nothing.
+        """
+        for path in self.out.iterdir():
+            if path.is_file() and path.suffix in (".png", ".pgw"):
+                path.unlink()
+
     def wanted(self, path: Path) -> bool:
+        # Ahead of the variant test below: none of these carry the _depr suffix it looks for.
+        if self.is_vector_artifact(path):
+            return True
         if path.suffix not in (".png", ".pgw"):
             return False
         if self.args.variant == "both":
@@ -326,9 +394,11 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     r.prune()
+    r.bundle_vectors()
+    rendered = len(list(r.out.glob("*_vec")))
+    r.discard_images()
     r.write_failures()
 
-    rendered = len(list(r.out.glob("*.pgw")))
     log(f"{args.grid_id} finished: {rendered} tile(s) rendered, "
         f"{len(r.failures)} recorded as failures")
 

@@ -15,8 +15,9 @@ nextflow lint .                       # strict v2 parser
 tests/test_config_profiles.sh         # every profile resolves; derived config tracks its params
 shellcheck tests/*.sh tests/stub_pullauta containers/*.sh \
            containers/karttapullautin/pullauta
-.venv/bin/pytest tests/               # 41 tests: plan_grids' geometry, run_pullauta's recovery
-                                      # ladder, fetch_laz's permanent/transient verdict
+.venv/bin/pytest tests/               # 79 tests: plan_grids' geometry, run_pullauta's recovery
+                                      # ladder, fetch_laz's verdicts, the tiler's routing and
+                                      # tracing, and osm_shapes' rule semantics
 
 # One test, one case
 .venv/bin/pytest tests/test_plan_grids.py::test_tile_size_inference_uses_the_mode_not_the_mean -v
@@ -26,13 +27,13 @@ PATH="$PWD/.venv/bin:$PATH" tests/test_stub_wiring.sh
 
 # Real runs. Both are self-contained -- their inputs are in assets/ -- but download from
 # geodaten.bayern.de, so they are run by hand rather than in CI.
-nextflow run . -profile podman,test_immenstadt     # ~15 min, downloads ~5.4 GB
+nextflow run . -profile podman,test_immenstadt     # ~20 min, downloads ~5.4 GB
 tests/test_failure_injection.sh                    # ~10 min, downloads ~2.6 GB
 
 # Containers
 containers/build.sh [name ...]        # builds mapant/<name>:{version,latest}
 containers/build.sh --manifest       # names/tags/build-args as JSON; CI's single source of truth
-containers/smoke.sh k2t              # per-image checks; also runs in CI on every build
+containers/smoke.sh tiler            # per-image checks; also runs in CI on every build
 # To run against those images, write the four withName selectors into a -c file; there is
 # deliberately no profile for them (see the Quickstart in README.md).
 
@@ -56,9 +57,17 @@ failure. Workflow files are checked with `actionlint` (also not installed; it em
 
 ## Architecture
 
-`main.nf` wires seven processes, one per file under `modules/local/<name>/main.nf`. All non-trivial
+`main.nf` wires six processes, one per file under `modules/local/<name>/main.nf`. All non-trivial
 logic lives in `bin/` so it can be tested without Nextflow; a module body should only marshal
 parameters.
+
+**The pipeline builds one pyramid, and it is vector.** There was a raster one (`MAKE_TILES`,
+`TILE_VIEWER`, karttapullautin2tiles) and it is gone. Its removal is what allows the arrangement
+below: with no rendered image to keep the vectors honest against, karttapullautin has no reason to
+draw the OSM shapes, so it is given none -- `vectorconf` is empty and no archive reaches its input
+folder -- and `bin/osm_shapes.py` matches them in `MAKE_VECTOR_TILES` instead. If a raster product
+is ever wanted again, this is the decision to revisit first: two renderers drawing OSM from two
+code paths is exactly the divergence this avoids.
 
 `docs/metro_map.mmd` restates that wiring by hand for the README's metro map, and **nothing checks
 that the two still agree** — adding, removing or re-plumbing a process means editing it and
@@ -68,6 +77,68 @@ process names on purpose, which is also what lets `nf-metro serve` light it up l
 The pyramid spans `base_zoom`..`max_zoom` only. There is deliberately no overview step: below the base
 zoom the generated viewer shows OSM's own raster tiles, which avoids a reduction barrier over every
 finished tile at the end of a run.
+
+`MAKE_VECTOR_TILES` cuts the pyramid from the GeoJSON and classified rasters karttapullautin writes
+when `output_geojson=1` and `vege_bitmode=1` (both set by `bin/render_ini.py`, which also forces
+`output_dxf=0` and an empty `vectorconf`), plus the OSM shapes matched by `bin/osm_shapes.py`. One
+task per base-zoom parent, disjoint subtrees, `groupKey` fan-in, `remainder: true`. Six things
+about it are load-bearing:
+
+- **Nothing may be left out to fit a budget.** Every one of tippecanoe's thinning options
+  (`--drop-densest-as-needed` and the rest) decides per tile, from whatever happens to be in it, so
+  two parents cutting the same zoom disagree about what the map contains. That is visible as content
+  appearing and disappearing along the line where two parents meet -- a lake on an overview tile in
+  one and not the other -- and it also truncated the *deepest* zoom, which is the one the OCD export
+  in mapant-bayern reads. They are all off (`--no-tile-size-limit`, `--no-feature-limit`,
+  `--drop-rate=1`); what each zoom shows is the zoom plan in `make_vector_tiles.py`, written into
+  each feature's `tippecanoe` member, and it depends on the feature alone. The cliff hatching, which
+  is most of the data, is sampled by a hash of the tick's position for the same reason.
+- **`tippecanoe --coalesce` is not an optimisation.** A cliff tick is a two-point line carrying only
+  its class, and there are ~170k per km², so per-feature overhead is most of a tile; coalescing the
+  ones that share their attributes roughly halves it.
+- **Area boundaries are generalised on the raster, not on the polygons.** Two shades of green meet
+  along a pixel edge that belongs to both polygons. `Polygon.simplify` moves that edge twice, once
+  per side, and leaves a sliver of white paper between them -- which is what an earlier version did.
+  Each zoom is therefore traced from its own mode-downsampled grid, and what smoothing is left is
+  `shapely.coverage_simplify`, which simplifies a shared edge once and only ever drops vertices.
+  Dropping rather than moving is also what keeps the polygons of two neighbouring square kilometres
+  meeting along the tile border they share.
+- **`--clip-bounding-box` clips geometry but still writes tiles outside the parent** when their
+  buffer reaches in, so `make_vector_tiles.py` prunes anything whose base-zoom ancestor is not this
+  parent. Without that, two tasks publish the same tile path with different contents.
+- **A shape in two grids' extracts is written once.** Extracts overlap by `osm_buffer_m` and
+  osmium keeps a crossing way whole in both, so a parent that draws from two grids is handed the
+  same boundary road twice -- 42 % of the features, measured on Immenstadt. `osm_shapes.py` hashes
+  each serialised feature and writes it once. Drawn twice it is invisible; exported to OCAD it is
+  two objects on top of each other.
+- **The OSM shapes are clipped to the ground that was rendered**, which is the union of the bounds
+  of the bundles under the parent. The extract covers a whole grid plus `osm_buffer_m`, so without
+  the clip a road would run out past the last rendered square kilometre into terrain the map says
+  nothing about. Clipping per parent rather than per tile is also why no shape arrives twice.
+- **`bin/osm_shapes.py` is a second implementation of `src/shapefile/render.rs`'s matcher**, and it
+  is a transcription rather than an equivalent: a missing field reads as the empty string (so
+  `bridge!=yes` is true of a way with no bridge tag, and `power!=` means "has a power tag"), only
+  DBF *text* columns are read, a rule whose code has no symbol leaves the shape for the next rule
+  rather than consuming it, and an area code is only drawn from a closed way. Change any of those
+  and the map quietly gains or loses features. It also writes an identical feature once: two grids'
+  extracts overlap, so a parent that draws from both is handed the same boundary road twice. `tests/test_osm_shapes.py` pins each one; the
+  standing check is the feature-by-feature diff against karttapullautin's own output described in
+  the README.
+
+Two things about karttapullautin's classified rasters have each cost a day. A world file gives the
+centre of the north-west pixel, not the corner a geotransform starts at, so `read_world_file`
+subtracts the half pixel; taking the number as it stands puts everything traced from a raster half a
+metre south-east of the vectors drawn over the same ground. And **the four rasters are not on one
+grid**: vegetation, water and blocks are 1 m per pixel, but `undergrowth_bit` is drawn at render
+resolution, 254/600 m per pixel. Nothing here may assume a metre; the pixel size comes from each
+raster's own world file, which is also what decides how far it is downsampled per zoom. (Cropping it
+as though it were metres is what karttapullautin itself did, which put the undergrowth of a tile at
+42 % of its right offset -- fixed in the branch this pipeline needs.)
+
+The `formline` setting decides whether the `*_intermed` classes belong in the contour layer: with
+`formline=2` (the default, and what `assets/pullauta.ini` sets) `render.rs` filters them by slope and
+writes the survivors as `formlines`, so routing the raw candidates into `contours` as well puts
+nearly twice as many lines on the map.
 
 The scale is what shapes everything: 15+ TB of input, ~72,000 tiles, ~3,000 CPU-hours. Nothing may be
 downloaded up front and no intermediate may outlive the task that made it.
@@ -99,9 +170,11 @@ index, lon/lat envelopes via `transform_bounds(densify_pts=21)`, and the tile→
 with each parent's core-tile count. The halo pool is deliberately the **whole** CSV, not the filtered
 selection, so a `--region_bbox` run renders identically to a full one.
 
-Per-grid OSM extraction is a feasibility requirement, not an optimisation: karttapullautin unzips its
-shapefile archive per invocation and re-lists it per tile, so a country-wide archive would be
-unpacked once per grid and scanned a hundred times.
+OSM extraction stays per grid now that the shapes go to the tiler instead of the renderer, because
+the archive is joined to the tiles under a parent: a parent stages only the grids it actually draws
+from, and the country-wide archive is never staged anywhere. The join carries the archive on each
+*tile* and `unique()`s the list per parent -- staging the same path twice under one name is an
+error, and a hundred copies of one archive would be staged either way.
 
 ## Traps that have already cost time
 
@@ -123,8 +196,7 @@ unpacked once per grid and scanned a hundred times.
   host-absolute path in committed config.
 - **The end-of-run `Outputs:` listing prints each channel item in full**, capping the *number of
   items* (ten, once there are more than twenty) but not their size. A published item that is a list
-  of a task's files therefore prints every one of them: `MAKE_TILES.out.tiles` is a whole z11..z18
-  subtree, ~22,000 paths per task. `main.nf` flattens the tiles channel before publishing so the cap
+  of a task's files therefore prints every one of them: one task's item is a whole subtree. `main.nf` flattens the tiles channel before publishing so the cap
   applies per file; it is not a no-op, and removing it puts megabytes of tile names on the console.
 - **Never assert on Nextflow's console output.** The end-of-run summary is written by whichever log
   observer is active: ANSI in a terminal, plain in CI, and a third `[SUCCESS] completed=… cached=…`
@@ -136,8 +208,9 @@ unpacked once per grid and scanned a hundred times.
   Use `"${var}:tag"` — this has produced a mis-tagged image and a broken `git rev-parse` already.
 - **podman never re-pulls a tag it already has**, and three of the four images are referenced as
   `:latest`. A working tree newer than the local image cache therefore runs against whatever was
-  pulled weeks ago: the k2t 0.2.0 bump against a cached 0.1.3 fails as `Unknown option: --format` in
-  `MAKE_TILES`, minutes into a run, with nothing pointing at the image. `podman pull` the four images
+  pulled weeks ago: a bumped image against a stale cache fails minutes into a run with an error --
+  a missing `tippecanoe`, an option the old version did not have -- that points at anything but the
+  image. `podman pull` the four images
   before trusting a red end-to-end run — a fresh machine, having no cache, is unaffected.
 
 ## Containers

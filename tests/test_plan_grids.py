@@ -275,8 +275,8 @@ def test_derived_envelope_never_undercuts_a_four_corner_transform():
     """
     A UTM box's edges are curves in lon/lat, so transforming only the corners can *under*-estimate
     the envelope. A tile would then be assigned to too few web-mercator parents and the map would
-    have thin missing slivers. This is the mistake k2t's own list_tiles makes, and the reason the
-    parent map is computed here instead.
+    have thin missing slivers. It is a mistake that has been made by a tiler this pipeline used, and
+    the reason the parent map is computed here instead.
 
     For a 1 km tile the two agree to within floating point -- the curvature is negligible at that
     size, which is worth knowing rather than assuming. The property that must hold at every size

@@ -141,6 +141,12 @@
                 "download_limit_rate": {
                     "type": "string",
                     "description": "curl --limit-rate value per stream, e.g. '20M'."
+                },
+                "laz_cache": {
+                    "type": "string",
+                    "format": "directory-path",
+                    "description": "Keep downloaded laz files in this directory instead of in each task, and reuse them.",
+                    "help_text": "Each tile is then downloaded once per run instead of once per grid that needs it (no halo amplification), a re-run downloads nothing it already has, and the laz files can sit on a big, slow disk while workDir -- where karttapullautin writes tens of GB of temporaries -- is on a fast one. Cached files are checksum-verified every time they are used. Nothing is ever deleted from the cache. The directory must be visible inside the container, e.g. podman.runOptions = '-v <dir>:<dir>'."
                 }
             }
         },

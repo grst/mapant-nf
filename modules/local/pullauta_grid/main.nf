@@ -29,7 +29,6 @@ process PULLAUTA_GRID {
 
     script:
     def limit_rate = params.download_limit_rate ? "--limit-rate '${params.download_limit_rate}'" : ''
-    def laz_cache = params.laz_cache ? "--cache '${params.laz_cache}'" : ''
     // karttapullautin looks for *.zip in its lazfolder and unzips them itself; there is no separate
     // option for the shapefile set. Anything but an archive is a sentinel -- assets/NONE when the
     // run has no OSM, <grid>.NONE when the grid's extract held nothing drawable -- and staging it
@@ -58,8 +57,7 @@ process PULLAUTA_GRID {
         --failures download_failures.${grid_id}.tsv \\
         --jobs ${params.download_jobs} \\
         --retries ${params.download_retries} \\
-        ${limit_rate} \\
-        ${laz_cache}
+        ${limit_rate}
 
     ${stage_shapes}
 
@@ -69,7 +67,6 @@ process PULLAUTA_GRID {
         --ini ${effective_ini} \\
         --processes ${task.cpus} \\
         --max-attempts ${params.max_pullauta_attempts} \\
-        --variant ${params.png_variant} \\
         --log pullauta.${grid_id}.log \\
         --failures failures.${grid_id}.tsv
     """

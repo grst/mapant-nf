@@ -1,12 +1,7 @@
-# The tiler: tippecanoe, and the Python everything in bin/ needs.
+# The tiler: tippecanoe and tile-join, and the Python everything in bin/ needs.
 #
-# It used to be the karttapullautin2tiles image -- the raster pyramid's tiler -- and carried that
-# package's dependency set because bin/*.py happened to need the same one. The pyramid is vector
-# now, cut by tippecanoe from GeoJSON, so k2t is gone and the dependencies are pinned here
-# explicitly, which is what this repository's rebuild-on-context-hash rule asks for anyway.
-#
-# python:3.13-slim, not 3.14: numpy, rasterio, pyproj and shapely publish manylinux wheels for
-# cp313, and a missing wheel here turns a 30-second image build into a from-source GDAL compile.
+# python:3.13-slim, not 3.14: pyproj publishes manylinux wheels for cp313, and a missing wheel here
+# turns a 30-second image build into a from-source PROJ compile.
 FROM docker.io/library/python:3.13-slim AS tippecanoe
 
 # Built rather than installed from Debian: trixie has 2.53 and bookworm has none, and a version
@@ -32,17 +27,10 @@ FROM docker.io/library/python:3.13-slim
 
 # procps: Nextflow shells out to `ps` for task metrics and fails the task without it.
 #
-# libexpat1: rasterio's manylinux wheel links libexpat.so.1 (via its bundled GDAL) but does not
-# vendor it, and python:*-slim is minimal enough not to have it. Without this, every rasterio
-# import -- so every tiling task -- dies with
-#     ImportError: libexpat.so.1: cannot open shared object file
-# which is a runtime failure the pip install step reports as success.
-#
 # libsqlite3-0: tippecanoe links it, and the -dev package it was built against is in the other
 # stage.
 RUN apt-get -o APT::Sandbox::User=root update \
  && apt-get -o APT::Sandbox::User=root install -y --no-install-recommends \
-      libexpat1 \
       libsqlite3-0 \
       procps \
  && rm -rf /var/lib/apt/lists/*
@@ -55,9 +43,9 @@ COPY --from=tippecanoe /usr/local/bin/tile-join /usr/local/bin/tile-join
 # hash could produce different images, and that the newer version would never be picked up anyway
 # (nothing would trigger a rebuild). Bumping a line here is what publishes a new image.
 #
-# The tiler no longer reads the data -- karttapullautin's GeoJSON goes to tippecanoe as it is -- so
+# The tiler does not read the data -- karttapullautin's GeoJSON goes to tippecanoe as it is -- so
 # what is left is mercantile for the tile arithmetic, pyproj for bin/plan_grids.py and pillow for
-# the sprite bin/make_vector_style.py draws.
+# the sprite bin/make_viewer.py draws.
 RUN pip install --no-cache-dir \
       "mercantile==1.2.1" \
       "pillow==12.3.0" \

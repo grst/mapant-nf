@@ -9,8 +9,8 @@ to their ISOM codes -- and run_pullauta.py bundles them per tile as `<tile>_vec/
 .geojson.gz`. Every feature carries `layer` (karttapullautin's class) and `isom` (its symbol).
 
 This script does not open them. It hands every file to tippecanoe as it is, under the layer its
-name says, and tells tippecanoe what each zoom may show. The only thing it does with tippecanoe's
-output is remove the tiles that belong to another parent.
+name says, and tells tippecanoe what each zoom may show. The result is one PMTiles archive per
+parent, which MERGE_PMTILES joins into the map.
 
 The layer order below is karttapullautin's own compositing order (`src/render.rs`), because in a
 vector tile the drawing order is the layer order: the area fills, the contours, the point and line
@@ -154,7 +154,7 @@ def layer_files(in_dir: Path) -> list[tuple[str, Path]]:
 
 def tippecanoe_command(
     files: list[tuple[str, Path]],
-    out_dir: Path,
+    output: Path,
     parent: mercantile.Tile,
     max_zoom: int,
     buffer: int,
@@ -166,14 +166,12 @@ def tippecanoe_command(
     command = [
         "tippecanoe",
         "--force",
-        f"--output-to-directory={out_dir}",
+        f"--output={output}",
         f"--minimum-zoom={parent.z}",
         f"--maximum-zoom={max_zoom}",
-        # Uncompressed: the pyramid is published as plain files for a static host, which serves them
-        # without a Content-Encoding header, and a renderer will not gunzip what is not announced.
-        # Packing into PMTiles later compresses them there, where the reader does know.
-        "--no-tile-compression",
-        # Only this parent's own area, so the subtrees of two tasks never overlap.
+        # Only this parent's own area. tippecanoe still writes the tiles just outside it that its
+        # buffer reaches into, holding this parent's side of the border; MERGE_PMTILES merges them
+        # with the neighbour's copy of the same tile, which holds the other side.
         f"--clip-bounding-box={bounds.west},{bounds.south},{bounds.east},{bounds.north}",
         f"--buffer={buffer}",
         # Nothing is left out to fit a budget. Every one of these decisions is made per tile from
@@ -201,41 +199,10 @@ def tippecanoe_command(
     return command
 
 
-def prune_foreign_tiles(out_dir: Path, parent: mercantile.Tile) -> tuple[int, int]:
-    """
-    Delete tiles outside this parent, and the metadata tippecanoe writes per run.
-
-    --clip-bounding-box clips the geometry, but a tile just outside the parent whose buffer reaches
-    into it is still written. Left in place, two tasks would publish the same tile path with
-    different contents.
-    """
-    kept = pruned = 0
-    for tile in sorted(out_dir.rglob("*.pbf")):
-        z, x, y = int(tile.parent.parent.name), int(tile.parent.name), int(tile.stem)
-        shift = z - parent.z
-        if shift < 0 or (x >> shift, y >> shift) != (parent.x, parent.y):
-            tile.unlink()
-            pruned += 1
-        else:
-            kept += 1
-
-    # Per-parent metadata would collide in the published pyramid; VECTOR_VIEWER writes the one that
-    # describes the whole run.
-    metadata = out_dir / "metadata.json"
-    if metadata.is_file():
-        metadata.unlink()
-
-    for directory in sorted(out_dir.rglob("*"), reverse=True):
-        if directory.is_dir() and not any(directory.iterdir()):
-            directory.rmdir()
-
-    return kept, pruned
-
-
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("in_dir", type=Path, help="directory holding the <tile>_vec bundles")
-    ap.add_argument("out_dir", type=Path, help="where the z/x/y.pbf tree is written")
+    ap.add_argument("output", type=Path, help="the .pmtiles archive to write")
     ap.add_argument("--parent", nargs=3, type=int, required=True, metavar=("Z", "X", "Y"))
     ap.add_argument("--max-zoom", type=int, required=True)
     ap.add_argument("--buffer", type=int, default=8, help="tile buffer in 1/256 of a tile")
@@ -258,12 +225,9 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{len(files)} file(s) -> {z}/{x}/{y} .. z{args.max_zoom}: "
           + ", ".join(f"{layer} x{n}" for layer, n in counts.items()))
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    command = tippecanoe_command(files, args.out_dir, parent, args.max_zoom, args.buffer)
+    command = tippecanoe_command(files, args.output, parent, args.max_zoom, args.buffer)
     print("  " + " ".join(command[:6]) + " ...", flush=True)
     subprocess.run(command, check=True)
-    kept, pruned = prune_foreign_tiles(args.out_dir, parent)
-    print(f"{kept} tile(s) written, {pruned} outside {z}/{x}/{y} pruned")
     return 0
 
 

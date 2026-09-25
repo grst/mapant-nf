@@ -51,9 +51,7 @@ def row_for(src: Path, *, size: int, sha256: str, role: str = "core") -> dict[st
     }
 
 
-def run_fetch(
-    tmp_path: Path, rows: list[dict[str, str]], *, retries: int = 1, cache: Path | None = None
-) -> list[list[str]]:
+def run_fetch(tmp_path: Path, rows: list[dict[str, str]], *, retries: int = 1) -> list[list[str]]:
     """Run fetch_laz.py's main() over `rows` and return the rows of its failures TSV."""
     csv_path = tmp_path / "grid.csv"
     with csv_path.open("w", newline="") as fh:
@@ -66,7 +64,6 @@ def run_fetch(
         "--outdir", str(tmp_path / "in"),
         "--failures", str(failures),
         "--retries", str(retries),
-        *(["--cache", str(cache)] if cache else []),
     ])
     with failures.open(newline="") as fh:
         reported = list(csv.reader(fh, delimiter="\t"))
@@ -129,46 +126,3 @@ def test_a_file_that_is_simply_absent_is_transient(tmp_path: Path) -> None:
 
     assert status == 1
     assert [f[2] for f in failures] == ["transient"]
-
-
-def test_with_a_cache_the_tile_lands_there_and_in_is_a_symlink(tmp_path: Path) -> None:
-    src = write_source(tmp_path, "600_5300.laz", GOOD)
-    cache = tmp_path / "cache"
-    status, *failures = run_fetch(
-        tmp_path, [row_for(src, size=len(GOOD), sha256=GOOD_SHA)], cache=cache
-    )
-
-    assert status == 0
-    assert failures == []
-    link = tmp_path / "in" / "600_5300.laz"
-    assert link.is_symlink()
-    assert link.resolve() == (cache / "600_5300.laz").resolve()
-    assert link.read_bytes() == GOOD
-    assert list(cache.glob("*.part")) == []
-
-
-def test_a_cached_tile_is_not_downloaded_again(tmp_path: Path) -> None:
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    (cache / "600_5300.laz").write_bytes(GOOD)
-    # The source is gone: the only way this can succeed is from the cache.
-    row = row_for(tmp_path / "server" / "600_5300.laz", size=len(GOOD), sha256=GOOD_SHA)
-    status, *failures = run_fetch(tmp_path, [row], cache=cache)
-
-    assert status == 0
-    assert failures == []
-    assert (tmp_path / "in" / "600_5300.laz").read_bytes() == GOOD
-
-
-def test_a_corrupt_cached_tile_is_replaced(tmp_path: Path) -> None:
-    src = write_source(tmp_path, "600_5300.laz", GOOD)
-    cache = tmp_path / "cache"
-    cache.mkdir()
-    (cache / "600_5300.laz").write_bytes(b"x" * len(GOOD))
-    status, *failures = run_fetch(
-        tmp_path, [row_for(src, size=len(GOOD), sha256=GOOD_SHA)], cache=cache
-    )
-
-    assert status == 0
-    assert failures == []
-    assert (cache / "600_5300.laz").read_bytes() == GOOD

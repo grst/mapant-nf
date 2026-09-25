@@ -68,7 +68,6 @@ class Grid:
              "--ini", "effective.ini",
              "--processes", str(processes),
              "--max-attempts", "6",
-             "--variant", "depr",
              "--log", "pullauta.log",
              "--failures", "failures.tsv"],
             cwd=self.path, env=self.env | stub_env, capture_output=True, text=True,

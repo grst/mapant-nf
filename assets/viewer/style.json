@@ -1,0 +1,386 @@
+{
+  "version": 8,
+  "name": "mapant",
+  "sprite": "sprite",
+  "sources": {"mapant": {"type": "vector", "url": "pmtiles://mapant.pmtiles"}},
+  "layers": [
+    {
+      "id": "paper",
+      "type": "background",
+      "minzoom": "mapant:zoom:base",
+      "paint": {"background-color": "#ffffff"}
+    },
+    {
+      "id": "yellow",
+      "metadata": {"isom:symbol": "403"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "yellow",
+      "paint": {"fill-color": "rgb(255,219,166)", "fill-antialias": false}
+    },
+    {
+      "id": "vegetation",
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "vegetation",
+      "paint": {
+        "fill-color": [
+          "match",
+          ["get", "isom"],
+          "406",
+          "mapant:color:green-406",
+          "408",
+          "mapant:color:green-408",
+          "410",
+          "mapant:color:green-410",
+          "mapant:color:green-default"
+        ],
+        "fill-antialias": false
+      }
+    },
+    {
+      "id": "undergrowth-407",
+      "metadata": {"isom:symbol": "407"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "undergrowth",
+      "filter": ["==", ["get", "isom"], "407"],
+      "paint": {"fill-pattern": "mapant:pattern:undergrowth"}
+    },
+    {
+      "id": "undergrowth-409",
+      "metadata": {"isom:symbol": "409"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "undergrowth",
+      "filter": ["==", ["get", "isom"], "409"],
+      "paint": {"fill-pattern": "mapant:pattern:undergrowth-dense"}
+    },
+    {
+      "id": "shape-401",
+      "metadata": {"isom:symbol": "403"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "osm_areas",
+      "filter": ["in", ["get", "isom"], ["literal", ["401", "401T"]]],
+      "paint": {"fill-color": "rgb(255,184,83)", "fill-antialias": false}
+    },
+    {
+      "id": "shape-310",
+      "metadata": {"isom:symbol": "308"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "osm_areas",
+      "filter": ["in", ["get", "isom"], ["literal", ["310", "310T"]]],
+      "paint": {"fill-pattern": "marsh"}
+    },
+    {
+      "id": "shape-527",
+      "metadata": {"isom:symbol": "520"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "osm_areas",
+      "filter": ["in", ["get", "isom"], ["literal", ["527", "527T"]]],
+      "paint": {"fill-color": "rgb(194,176,33)", "fill-antialias": false}
+    },
+    {
+      "id": "shape-529",
+      "metadata": {"isom:symbol": "501.1"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "osm_areas",
+      "filter": ["in", ["get", "isom"], ["literal", ["529", "529T"]]],
+      "paint": {"fill-color": "rgb(232,167,116)", "fill-antialias": false}
+    },
+    {
+      "id": "contours",
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "contours",
+      "filter": ["==", ["get", "layer"], "contour"],
+      "paint": {"line-color": "rgb(166,85,43)", "line-width": ["mapant:metres", 2.1167]}
+    },
+    {
+      "id": "contours-index",
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "contours",
+      "filter": ["==", ["get", "layer"], "contour_index"],
+      "paint": {"line-color": "rgb(166,85,43)", "line-width": ["mapant:metres", 3.3867]}
+    },
+    {
+      "id": "depressions",
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "contours",
+      "filter": ["in", ["get", "layer"], ["literal", ["depression", "depression_intermed"]]],
+      "paint": {"line-color": "rgb(166,85,43)", "line-width": ["mapant:metres", 2.1167]}
+    },
+    {
+      "id": "depressions-index",
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "contours",
+      "filter": ["in", ["get", "layer"], ["literal", ["depression_index", "depression_index_intermed"]]],
+      "paint": {"line-color": "rgb(166,85,43)", "line-width": ["mapant:metres", 3.3867]}
+    },
+    {
+      "id": "formlines",
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "formlines",
+      "paint": {
+        "line-color": "rgb(166,85,43)",
+        "line-width": ["mapant:metres", 1.6933],
+        "line-dasharray": [6.0, 1.5]
+      }
+    },
+    {
+      "id": "slope-lines-contours",
+      "metadata": {"isom:symbol": "101.1"},
+      "type": "symbol",
+      "source": "mapant",
+      "source-layer": "contours",
+      "filter": [
+        "in",
+        ["get", "layer"],
+        [
+          "literal",
+          [
+            "depression",
+            "depression_index",
+            "depression_intermed",
+            "depression_index_intermed",
+            "formline_depression"
+          ]
+        ]
+      ],
+      "layout": {
+        "symbol-placement": "line",
+        "symbol-spacing": ["mapant:metres", 48.0],
+        "icon-image": "slope-tick",
+        "icon-size": ["mapant:scale", 22.6, 14],
+        "icon-rotation-alignment": "map",
+        "icon-keep-upright": false,
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true
+      }
+    },
+    {
+      "id": "slope-lines-formlines",
+      "metadata": {"isom:symbol": "101.1"},
+      "type": "symbol",
+      "source": "mapant",
+      "source-layer": "formlines",
+      "filter": [
+        "in",
+        ["get", "layer"],
+        [
+          "literal",
+          [
+            "depression",
+            "depression_index",
+            "depression_intermed",
+            "depression_index_intermed",
+            "formline_depression"
+          ]
+        ]
+      ],
+      "layout": {
+        "symbol-placement": "line",
+        "symbol-spacing": ["mapant:metres", 48.0],
+        "icon-image": "slope-tick",
+        "icon-size": ["mapant:scale", 22.6, 14],
+        "icon-rotation-alignment": "map",
+        "icon-keep-upright": false,
+        "icon-allow-overlap": true,
+        "icon-ignore-placement": true
+      }
+    },
+    {
+      "id": "knolls",
+      "type": "circle",
+      "source": "mapant",
+      "source-layer": "dotknolls",
+      "paint": {"circle-color": "rgb(166,85,43)", "circle-radius": ["mapant:metres", 1.4817]}
+    },
+    {
+      "id": "cliffs",
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "cliffs",
+      "layout": {"line-cap": "round"},
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 2.54]}
+    },
+    {
+      "id": "shape-301",
+      "metadata": {"isom:symbol": "301"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "osm_areas",
+      "filter": ["in", ["get", "isom"], ["literal", ["301", "301T"]]],
+      "paint": {"fill-color": "rgb(29,190,255)", "fill-antialias": false}
+    },
+    {
+      "id": "shape-526",
+      "metadata": {"isom:symbol": "521"},
+      "type": "fill",
+      "source": "mapant",
+      "source-layer": "osm_areas",
+      "filter": ["==", ["get", "isom"], "526"],
+      "paint": {"fill-color": "mapant:color:building"}
+    },
+    {
+      "id": "shape-503-casing",
+      "metadata": {"isom:symbol": "502"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["503", "503T"]]],
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 8.7]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-504",
+      "metadata": {"isom:symbol": "503"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["504", "504T"]]],
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 5.25]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-505",
+      "metadata": {"isom:symbol": "504"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["505", "505T"]]],
+      "paint": {
+        "line-color": "rgb(0,0,0)",
+        "line-width": ["mapant:metres", 5.25],
+        "line-dasharray": [8.571, 0.714]
+      },
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-515",
+      "metadata": {"isom:symbol": "509"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["515", "515T"]]],
+      "paint": {"line-color": "rgb(255,255,255)", "line-width": ["mapant:metres", 5.25]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-503",
+      "metadata": {"isom:symbol": "502"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["503", "503T"]]],
+      "paint": {"line-color": "rgb(232,167,116)", "line-width": ["mapant:metres", 4.5]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-524",
+      "metadata": {"isom:symbol": "518"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["524", "524T"]]],
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 3.75]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-306",
+      "metadata": {"isom:symbol": "305"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["306", "306T"]]],
+      "paint": {"line-color": "rgb(29,190,255)", "line-width": ["mapant:metres", 2.7]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-507",
+      "metadata": {"isom:symbol": "506"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["507", "507T"]]],
+      "paint": {
+        "line-color": "rgb(0,0,0)",
+        "line-width": ["mapant:metres", 2.7],
+        "line-dasharray": [5.556, 1.389]
+      },
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-516",
+      "metadata": {"isom:symbol": "510"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["516", "516T"]]],
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 2.1]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-414",
+      "metadata": {"isom:symbol": "516"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["414", "414T"]]],
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 2.1]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-301.1",
+      "metadata": {"isom:symbol": "301"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["301.1", "301.1T"]]],
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 1.8]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-529.1",
+      "metadata": {"isom:symbol": "501.1"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["529.1", "529.1T"]]],
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 1.4]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-401.1",
+      "metadata": {"isom:symbol": "415"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["401.1", "401.1T"]]],
+      "paint": {"line-color": "rgb(0,0,0)", "line-width": ["mapant:metres", 1.4]},
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    },
+    {
+      "id": "shape-515-over",
+      "metadata": {"isom:symbol": "509"},
+      "type": "line",
+      "source": "mapant",
+      "source-layer": "osm_lines",
+      "filter": ["in", ["get", "isom"], ["literal", ["515", "515T"]]],
+      "paint": {
+        "line-color": "rgb(0,0,0)",
+        "line-width": ["mapant:metres", 5.25],
+        "line-dasharray": [4.286, 2.857]
+      },
+      "layout": {"line-cap": "butt", "line-join": "round"}
+    }
+  ]
+}

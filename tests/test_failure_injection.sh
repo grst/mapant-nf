@@ -82,8 +82,8 @@ rendered="$(find "${SCRATCH}/work" -name '*_vec' -type d -printf '%f\n' 2> /dev/
     | sed 's/_vec$//' | sort -u | tr '\n' ' ')"
 check 'the three intact tiles rendered' '590_5268 590_5269 591_5268 ' "$rendered"
 
-check 'tiles were published' yes \
-    "$([ "$(find "${SCRATCH}/out/tiles_vector" -name '*.pbf' 2> /dev/null | wc -l)" -gt 0 ] && echo yes || echo no)"
+check 'the map was published' yes \
+    "$([ -s "${SCRATCH}/out/map/mapant.pmtiles" ] && echo yes || echo no)"
 
 dl="${SCRATCH}/out/qc/download_failures.tsv"
 check 'one download failure recorded' 1 "$(tail -n +2 "$dl" 2> /dev/null | wc -l)"

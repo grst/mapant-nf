@@ -24,9 +24,8 @@ process OSM_TO_SHAPES {
     #                                  buys nothing on an extract this small
     #   -skipfailures               -- OSM is full of geometries that cannot be expressed as a
     #                                  shapefile feature; one of them must not fail the grid
-    #   -t_srs                      -- so that the shapes arrive on the same grid as the render,
-    #                                  which is what lets the tiler reproject both with one
-    #                                  transformer
+    #   -t_srs                      -- karttapullautin draws the shapes in the grid's own CRS,
+    #                                  and reprojects them to WGS84 with everything else
     ogr2ogr \\
         --config OSM_USE_CUSTOM_INDEXING NO \\
         -skipfailures \\

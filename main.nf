@@ -1,14 +1,14 @@
 #!/usr/bin/env nextflow
 /*
- * mapant -- generate a web-mercator vector map pyramid from a list of LiDAR tiles.
+ * mapant -- generate a web-mercator vector map (PMTiles) from a list of LiDAR tiles.
  *
  * Give it a CSV of laz tiles (url, checksum, bbox, CRS), an OSM extract and a karttapullautin
- * configuration, and it produces a z/x/y directory of Mapbox vector tiles, with the style that
- * draws them. Nothing here is specific to Bavaria; the input contract is assets/schema_tiles.json.
+ * configuration, and it produces the map as one PMTiles archive of vector tiles, with the style
+ * that draws them. Nothing here is specific to Bavaria; the input contract is assets/schema_tiles.json.
  *
  * karttapullautin does all the cartography: given a grid's LiDAR and its OSM shapes, it writes each
  * tile's map as per-layer GeoJSON in WGS84, already in its published form. MAKE_VECTOR_TILES hands
- * those files to tippecanoe untouched and cuts one parent's subtree.
+ * those files to tippecanoe untouched and cuts one parent's archive; MERGE_PMTILES joins them.
  *
  * See README.md for the design, and each run's published plan_summary.txt for its own numbers.
  */
@@ -21,7 +21,8 @@ include { OSM_EXTRACT   } from './modules/local/osm_extract'
 include { OSM_TO_SHAPES } from './modules/local/osm_to_shapes'
 include { PULLAUTA_GRID } from './modules/local/pullauta_grid'
 include { MAKE_VECTOR_TILES } from './modules/local/make_vector_tiles'
-include { VECTOR_VIEWER  } from './modules/local/vector_viewer'
+include { MERGE_PMTILES } from './modules/local/merge_pmtiles'
+include { MAKE_VIEWER   } from './modules/local/make_viewer'
 
 workflow {
 
@@ -129,14 +130,21 @@ workflow {
 
     MAKE_VECTOR_TILES(ch_parent_vec)
 
-    // A vector tile carries classes, not colours, so the style is not a nicety the way a raster
-    // viewer is: without it the pyramid cannot be drawn at all.
-    ch_vector_style = VECTOR_VIEWER(PLAN_GRIDS.out.parent_index, ch_ini).style
-        .mix(
-            VECTOR_VIEWER.out.metadata,
-            VECTOR_VIEWER.out.viewer,
-            VECTOR_VIEWER.out.sprite.flatten()
-        )
+    // Written into the archive and into the style, so whatever shows the map shows the credits.
+    def attribution = [
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+        params.attribution,
+        '<a href="https://github.com/karttapullautin/karttapullautin">karttapullautin</a>'
+    ].findAll { credit -> credit }.join(', ')
+
+    MERGE_PMTILES(MAKE_VECTOR_TILES.out.pmtiles.collect(), attribution)
+
+    MAKE_VIEWER(
+        PLAN_GRIDS.out.parent_index,
+        ch_ini,
+        channel.fromPath("${projectDir}/assets/viewer/*").collect(),
+        attribution
+    )
 
     // collectFile rather than a concatenation process: no container, no task, and the header is
     // kept exactly once.
@@ -174,14 +182,7 @@ workflow {
     }
 
     publish:
-    // Each MAKE_VECTOR_TILES task owns a disjoint subtree of the pyramid, so publishing them all
-    // into one directory is a plain union with no possibility of a collision.
-    //
-    // flatten() is for the end-of-run "Outputs:" summary, not for the publishing: Nextflow caps that
-    // listing at ten *channel items* but prints each item whole, and one task's item is the whole
-    // subtree under its parent. Ten of those is megabytes of tile names on the console. One path
-    // per item makes the cap bite. Same files, same paths, same union.
-    vector_tiles = MAKE_VECTOR_TILES.out.tiles.flatten().mix(ch_vector_style)
+    map = MERGE_PMTILES.out.pmtiles.mix(MAKE_VIEWER.out.files.flatten())
     qc = ch_render_failures.mix(ch_download_failures, PULLAUTA_GRID.out.log)
     plan = PLAN_GRIDS.out.summary.mix(
         PLAN_GRIDS.out.grid_index,
@@ -191,10 +192,9 @@ workflow {
 }
 
 output {
-    // path '.' keeps each file's task-relative path, so 'tiles_vector/13/4328/2862.pbf' lands at
-    // <outputDir>/tiles_vector/13/4328/2862.pbf and the pyramid assembles itself from many tasks.
-    vector_tiles {
-        path '.'
+    // The archive next to its viewer, which loads it by that relative name.
+    map {
+        path 'map'
         mode params.publish_mode
     }
 

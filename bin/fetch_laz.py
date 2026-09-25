@@ -16,12 +16,6 @@ apart from "the network had a bad minute":
 
 A permanently missing *halo* tile is only a warning: the renders next to it lose some of their 127 m
 of context, which is a slightly worse border rather than a wrong map.
-
-With --cache, tiles are kept in a directory that outlives the task and ./in only holds symlinks to
-them. A tile is then downloaded once per run rather than once per grid that needs it (the halo
-amplification), a re-run after a crash downloads nothing it already has, and the laz files can live
-on a big, slow disk while the task directory -- where karttapullautin writes its temporaries -- is
-on a fast one. Cached files are verified like everything else, every time they are used.
 """
 
 from __future__ import annotations
@@ -29,7 +23,6 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
-import os
 import random
 import shutil
 import subprocess
@@ -91,25 +84,12 @@ def fetch_one(row: dict[str, str], args: argparse.Namespace) -> tuple[str, str]:
     Outcome is 'ok', 'permanent' (no retry can help) or 'transient' (the grid should be retried).
     """
     tile, size, sha = row["tile"], int(row["size_bytes"]), row["sha256"].lower()
-    if args.cache is None:
-        return acquire(row, args.outdir / tile, size, sha, args)
-    cached = args.cache / tile
-    outcome, detail = acquire(row, cached, size, sha, args)
-    if outcome == "ok":
-        link = args.outdir / tile
-        link.unlink(missing_ok=True)
-        link.symlink_to(cached.resolve())
-    return outcome, detail
+    dest = args.outdir / tile
 
-
-def acquire(
-    row: dict[str, str], dest: Path, size: int, sha: str, args: argparse.Namespace
-) -> tuple[str, str]:
-    """Make `dest` a verified copy of the tile, downloading it only if it is not one already."""
-    # Already there and intact? That happens on a Nextflow retry of the same task, and for every
-    # tile a previous grid put in the cache.
+    # Already there and intact? That happens on a Nextflow retry of the same task.
     if dest.exists() and verify(dest, size, sha) is None:
         return "ok", "cached"
+    dest.unlink(missing_ok=True)
 
     # The schema permits a bare path as well as a URL; curl needs a scheme. A file:// URL is also how
     # a run against an already-downloaded mirror is expressed: rewrite the CSV's url column, and the
@@ -118,9 +98,7 @@ def acquire(
     if "://" not in url:
         url = Path(url).resolve().as_uri()
 
-    # Unique per process: two grids that share a halo tile may fetch it into the cache at the same
-    # time. Each writes its own part file and the rename is atomic, so neither sees a torn file.
-    part = dest.with_name(f"{dest.name}.{os.getpid()}.part")
+    part = dest.with_name(dest.name + ".part")
     reason = "no attempt made"
     # Whether the *last* attempt was a complete transfer of the wrong bytes, as opposed to a transfer
     # that did not finish. It decides the outcome below.
@@ -159,15 +137,14 @@ def acquire(
     return "transient", f"{reason} after {args.retries} attempts"
 
 
-def check_free_space(rows: list[dict[str, str]], cache: Path | None) -> None:
+def check_free_space(rows: list[dict[str, str]]) -> None:
     """
     Fail before spending an hour on a download that cannot fit.
 
     The estimate is the grid's own laz bytes plus room for karttapullautin's temporaries, which are
-    comparable in size. With a cache the laz files are elsewhere and only the temporaries are here.
+    comparable in size.
     """
-    laz = sum(int(r["size_bytes"]) for r in rows)
-    need = int(laz * 0.6) if cache else int(laz * 1.6)
+    need = int(sum(int(r["size_bytes"]) for r in rows) * 1.6)
     free = shutil.disk_usage(".").free
     if free < need:
         log(f"not enough free space here: need ~{need // 1024**3} GiB, have {free // 1024**3} GiB")
@@ -184,16 +161,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--retries", type=int, default=3)
     ap.add_argument("--limit-rate", help="curl --limit-rate value per stream, e.g. '20M'")
-    ap.add_argument("--cache", type=Path,
-                    help="keep the laz files here and symlink them into --outdir")
     args = ap.parse_args(argv)
 
     with args.csv.open(newline="") as fh:
         rows = list(csv.DictReader(fh))
     args.outdir.mkdir(parents=True, exist_ok=True)
-    if args.cache:
-        args.cache.mkdir(parents=True, exist_ok=True)
-    check_free_space(rows, args.cache)
+    check_free_space(rows)
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         results = list(pool.map(lambda row: fetch_one(row, args), rows))

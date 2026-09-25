@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Run the whole pipeline with stubbed processes and check that the plan and the published pyramid
+# Run the whole pipeline with stubbed processes and check that the plan and the published map
 # agree with each other.
 #
 # This is the only end-to-end test that needs neither the LiDAR nor a container runtime, so it is
 # the one CI can run on every pull request. What it covers is the plumbing: the joins keyed on tile
-# and grid ids, the groupKey/groupTuple fan-in from tiles to web-mercator parents, publishing a
-# nested z/x/y tree assembled from many tasks, and -resume. Those are where this pipeline's
+# and grid ids, the groupKey/groupTuple fan-in from tiles to web-mercator parents, the collect into
+# the one archive, and -resume. Those are where this pipeline's
 # regressions have actually been -- both the `remainder: true` bug and the outputDir-above-profiles
 # bug would have been caught here.
 #
@@ -86,49 +86,35 @@ check "the region split into ${EXPECT_GRIDS} grids" \
 check 'the effective ini was published' test -s "${OUT}/pipeline_info/effective.ini"
 check 'plan_summary.txt was published' test -s "${OUT}/pipeline_info/plan_summary.txt"
 
-# The point of the whole tail of the pipeline: every parent tile the plan promised has to come out
-# of the pyramid. A broken join key, or a groupTuple that drops short groups, shows up here as
-# missing parents while the run still reports success -- which is exactly how it showed up for real.
-echo '==> every planned parent tile was published'
+# The point of the whole tail of the pipeline: every parent tile the plan promised has to reach the
+# archive. A broken join key, or a groupTuple that drops short groups, shows up here as missing
+# parents while the run still reports success -- which is exactly how it showed up for real. The
+# MERGE_PMTILES stub writes the names of the per-parent archives it was given into mapant.pmtiles.
+echo '==> every planned parent tile reached the archive'
 awk -F, 'NR > 1 { print $3 "/" $4 "/" $5 }' "${OUT}/pipeline_info/parent_tiles.csv" \
     | sort -u > "${SCRATCH}/planned_parents"
-# Guarded rather than relying on find's exit status: under `set -o pipefail` a missing base-zoom
-# directory would abort the script here, turning the most informative assertion in the file into an
-# unexplained exit.
-: > "${SCRATCH}/published_parents"
-if [ -d "${OUT}/tiles_vector/${BASE_ZOOM}" ]; then
-    find "${OUT}/tiles_vector/${BASE_ZOOM}" -name '*.pbf' \
-        | sed -e "s|^${OUT}/tiles_vector/||" -e 's|\.pbf$||' \
-        | sort -u > "${SCRATCH}/published_parents"
-fi
-check 'planned and published parent tiles are the same set' \
-    cmp -s "${SCRATCH}/planned_parents" "${SCRATCH}/published_parents"
-if ! cmp -s "${SCRATCH}/planned_parents" "${SCRATCH}/published_parents"; then
-    diff "${SCRATCH}/planned_parents" "${SCRATCH}/published_parents" | head -20 || true
+sed -e 's|\.pmtiles$||' -e 's|-|/|g' "${OUT}/map/mapant.pmtiles" 2> /dev/null \
+    | sort -u > "${SCRATCH}/merged_parents" || true
+check 'planned and merged parent tiles are the same set' \
+    cmp -s "${SCRATCH}/planned_parents" "${SCRATCH}/merged_parents"
+if ! cmp -s "${SCRATCH}/planned_parents" "${SCRATCH}/merged_parents"; then
+    diff "${SCRATCH}/planned_parents" "${SCRATCH}/merged_parents" | head -20 || true
 fi
 check 'more than one parent tile was produced' \
-    test "$(wc -l < "${SCRATCH}/published_parents")" -gt 1
-
-# The pyramid starts at the base zoom -- nothing below it is generated. The stub writes the base zoom
-# and one level under it, so both must be published and no shallower level may appear.
-echo '==> the pyramid starts at the base zoom'
-for z in "$BASE_ZOOM" "$((BASE_ZOOM + 1))"; do
-    check "zoom ${z} is present" test -d "${OUT}/tiles_vector/${z}"
-done
-check 'nothing was published below the base zoom' \
-    test ! -d "${OUT}/tiles_vector/$((BASE_ZOOM - 1))"
+    test "$(wc -l < "${SCRATCH}/merged_parents")" -gt 1
 
 # A vector tile carries classes, not colours: without the style there is nothing to look at, so it
-# is part of the pyramid rather than a convenience alongside it.
+# is part of the map rather than a convenience alongside it.
 echo '==> the style and the viewer'
-check 'the style was published' test -s "${OUT}/tiles_vector/style.json"
-check 'the sprite was published' test -s "${OUT}/tiles_vector/sprite.png"
-check 'metadata.json was published' test -s "${OUT}/tiles_vector/metadata.json"
-check 'the viewer was published' test -s "${OUT}/tiles_vector/index.html"
-check 'the style starts the pyramid at the base zoom' \
-    grep -q "\"minzoom\": ${BASE_ZOOM}" "${OUT}/tiles_vector/style.json"
+check 'the style was published' test -s "${OUT}/map/style.json"
+check 'the sprite was published' test -s "${OUT}/map/sprite.png"
+check 'the viewer was published' test -s "${OUT}/map/index.html"
+check 'every placeholder in the style was filled in' \
+    bash -c "test -s '${OUT}/map/style.json' && ! grep -q 'mapant:' '${OUT}/map/style.json'"
+check 'the style starts the map at the base zoom' \
+    grep -q "\"minzoom\": ${BASE_ZOOM}" "${OUT}/map/style.json"
 check 'the viewer falls back to OSM below it' \
-    grep -q 'tile.openstreetmap.org' "${OUT}/tiles_vector/index.html"
+    grep -q 'tile.openstreetmap.org' "${OUT}/map/index.html"
 
 echo '==> QC reporting'
 # Header-only: a stub run has no failures, and a QC file that is empty rather than header-only means

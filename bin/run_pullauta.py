@@ -244,90 +244,33 @@ class Renderer:
         return exit_code
 
     # -- afterwards ---------------------------------------------------------
-    def prune(self) -> None:
+    def bundle_vectors(self) -> int:
         """
-        Leave out/ holding exactly the rendered tiles of the requested variant.
+        Leave out/ holding one `<stem>_vec/` directory per rendered core tile, and nothing else.
 
-        The placeholders were a means, not a result, and `<t>.png` / `<t>_depr.png` are the same map
-        with and without depression markings -- carrying both would double a full run's intermediate
-        storage (~90 GB -> ~175 GB for Bavaria) for output nobody consumes.
+        One directory per tile rather than a file per layer, so the pipeline has a single path to
+        group by parent tile. The GeoJSON is gzipped on the way in -- tippecanoe reads it compressed.
+
+        Everything else goes: the placeholders, the images -- they were only how this script and
+        karttapullautin know a tile finished, and at ~1.5 MB a tile would keep a hundred gigabytes of
+        work directories alive across Bavaria -- and whatever else pullauta dropped here.
         """
-        for stem in [*self.halo, *self.blacklisted]:
-            png = self.out / f"{stem}.png"
-            if png.exists() and png.stat().st_size == 0:
-                png.unlink()
-
-        for path in self.out.iterdir():
-            # Deleting anything that is not a wanted render also gets rid of whatever else pullauta
-            # dropped here (<t>_basemap.dxf.bin and friends), which must not reach the publish step.
-            if path.is_file() and not self.wanted(path):
-                path.unlink()
-
-    def is_vector_artifact(self, path: Path) -> bool:
-        """A file belonging to a tile's vector output (`<t>_<layer>.geojson`), not to its image."""
-        return path.suffix == ".geojson"
-
-    def bundle_vectors(self) -> None:
-        """
-        Gather each core tile's vector output into one `out/<stem>_vec/` directory.
-
-        One directory per tile rather than nine loose files (`<t>_contours.geojson`,
-        `<t>_vegetation.geojson`, ...), so the pipeline has a single path to group by parent tile.
-
-        The GeoJSON is gzipped on the way in -- tippecanoe reads it compressed -- because it only has
-        to live until the parent tiles covering it have been cut.
-        """
+        rendered = 0
         for stem in self.core:
-            if stem in self.blacklisted:
+            layers = sorted(self.out.glob(f"{stem}_*.geojson"))
+            if stem in self.blacklisted or not layers:
                 continue
-            members = [
-                path
-                for path in self.out.glob(f"{stem}*")
-                if path.is_file() and self.is_vector_artifact(path)
-            ]
-            if not members:
-                continue
-
             bundle = self.out / f"{stem}_vec"
             bundle.mkdir(exist_ok=True)
-            for path in members:
-                if path.suffix == ".geojson":
-                    with path.open("rb") as src, gzip.open(bundle / f"{path.name}.gz", "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    path.unlink()
-                else:
-                    path.rename(bundle / path.name)
+            for path in layers:
+                with path.open("rb") as src, gzip.open(bundle / f"{path.name}.gz", "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            rendered += 1
 
-        # Anything left loose belongs to no core tile (a halo tile that was rendered before it was
-        # blacklisted, say) and must not reach the publish step.
         for path in self.out.iterdir():
-            if path.is_file() and self.is_vector_artifact(path):
+            if path.is_file():
                 path.unlink()
-
-    def discard_images(self) -> None:
-        """
-        Delete the rendered images, once the bundles are made.
-
-        They are how this script knows a tile finished -- a PNG closed with an IEND chunk -- and how
-        karttapullautin knows not to render it again, so they cannot go earlier than this. But
-        nothing downstream reads them since the pyramid became vector-only, and a task directory
-        holds ~1.5 MB per tile: at Bavaria's 72k tiles that is a hundred gigabytes of work
-        directories kept alive for nothing.
-        """
-        for path in self.out.iterdir():
-            if path.is_file() and path.suffix in (".png", ".pgw"):
-                path.unlink()
-
-    def wanted(self, path: Path) -> bool:
-        # Ahead of the variant test below: none of these carry the _depr suffix it looks for.
-        if self.is_vector_artifact(path):
-            return True
-        if path.suffix not in (".png", ".pgw"):
-            return False
-        if self.args.variant == "both":
-            return True
-        is_depr = path.stem.endswith("_depr")
-        return is_depr if self.args.variant == "depr" else not is_depr
+        return rendered
 
     def write_failures(self) -> None:
         with self.args.failures.open("w", newline="") as fh:
@@ -361,7 +304,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ini", type=Path, default=Path("effective.ini"))
     ap.add_argument("--processes", type=int, default=1)
     ap.add_argument("--max-attempts", type=int, default=6)
-    ap.add_argument("--variant", choices=("depr", "plain", "both"), default="depr")
     ap.add_argument("--log", type=Path, default=Path("pullauta.log"))
     ap.add_argument("--failures", type=Path, default=Path("failures.tsv"))
     args = ap.parse_args(argv)
@@ -398,10 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             "", tail(args.log.read_text(), 20),
         )
 
-    r.prune()
-    r.bundle_vectors()
-    rendered = len(list(r.out.glob("*_vec")))
-    r.discard_images()
+    rendered = r.bundle_vectors()
     r.write_failures()
 
     log(f"{args.grid_id} finished: {rendered} tile(s) rendered, "

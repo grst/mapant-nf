@@ -2,7 +2,7 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://raw.githubusercontent.com/grst/mapant/main/nextflow_schema.json",
     "title": "mapant pipeline parameters",
-    "description": "Generate a web-mercator raster tile pyramid from a list of LiDAR tiles using karttapullautin.",
+    "description": "Generate a web-mercator vector map (PMTiles) from a list of LiDAR tiles using karttapullautin.",
     "type": "object",
     "$defs": {
         "input_output": {
@@ -27,7 +27,7 @@
                     "format": "file-path",
                     "exists": true,
                     "description": "OpenStreetMap extract used to draw roads, buildings and water.",
-                    "help_text": "Optional. Without it karttapullautin renders contours, cliffs and vegetation only. A single country-sized .pbf is fine: the pipeline cuts per-grid extracts from it, which it has to, because karttapullautin re-reads the unpacked shapefile set once per rendered tile."
+                    "help_text": "Optional. Without it the map has contours, cliffs and vegetation only. A single country-sized .pbf is fine: the pipeline cuts a per-grid extract from it, and each grid's renderer is handed only its own."
                 },
                 "pullauta_ini": {
                     "type": "string",
@@ -46,7 +46,7 @@
                     "type": "string",
                     "format": "directory-path",
                     "default": "results",
-                    "description": "Where the tile pyramid, QC files and provenance are written."
+                    "description": "Where the map archive, its viewer, QC files and provenance are written."
                 },
                 "publish_mode": {
                     "type": "string",
@@ -58,12 +58,17 @@
                         "rellink"
                     ],
                     "description": "How published files leave the work directory.",
-                    "help_text": "'copy' works everywhere including object stores. 'link' (hardlink) is far cheaper for the millions of small files a large run produces, but needs outdir and workDir on one filesystem. Never use 'move': it breaks -resume."
+                    "help_text": "'copy' works everywhere including object stores. 'link' (hardlink) avoids copying the country-sized archive, but needs outdir and workDir on one filesystem. Never use 'move': it breaks -resume."
                 },
                 "map_title": {
                     "type": "string",
                     "default": "mapant",
-                    "description": "Title shown in the generated HTML viewer."
+                    "description": "Title of the map, shown in the viewer and written into the archive's metadata."
+                },
+                "attribution": {
+                    "type": "string",
+                    "description": "Credit for the LiDAR data, shown on the map next to OpenStreetMap and karttapullautin.",
+                    "help_text": "HTML is allowed, e.g. '<a href=\"https://geodaten.bayern.de\">Bayerische Vermessungsverwaltung</a>'. Most open LiDAR licences require it."
                 }
             }
         },
@@ -108,16 +113,6 @@
                     "minimum": 1,
                     "description": "How many times to re-run a grid while isolating tiles that crash the renderer.",
                     "help_text": "A karttapullautin panic aborts the whole process, so the grid is re-run -- it resumes by itself, skipping finished tiles. An attempt that makes no progress is retried single-threaded, which identifies the offending tile unambiguously; that tile is then recorded in qc/pullauta_failures.tsv and skipped, while still serving as a neighbour for the tiles around it."
-                },
-                "png_variant": {
-                    "type": "string",
-                    "default": "depr",
-                    "enum": [
-                        "depr",
-                        "plain"
-                    ],
-                    "description": "Which karttapullautin render to tile: with ('depr') or without depression markings.",
-                    "help_text": "Keeping only one halves the intermediate storage of a large run (~90 GB rather than ~175 GB for Bavaria)."
                 }
             }
         },
@@ -141,12 +136,6 @@
                 "download_limit_rate": {
                     "type": "string",
                     "description": "curl --limit-rate value per stream, e.g. '20M'."
-                },
-                "laz_cache": {
-                    "type": "string",
-                    "format": "directory-path",
-                    "description": "Keep downloaded laz files in this directory instead of in each task, and reuse them.",
-                    "help_text": "Each tile is then downloaded once per run instead of once per grid that needs it (no halo amplification), a re-run downloads nothing it already has, and the laz files can sit on a big, slow disk while workDir -- where karttapullautin writes tens of GB of temporaries -- is on a fast one. Cached files are checksum-verified every time they are used. Nothing is ever deleted from the cache. The directory must be visible inside the container, e.g. podman.runOptions = '-v <dir>:<dir>'."
                 }
             }
         },
@@ -156,7 +145,7 @@
             "properties": {
                 "osm_chunk_size": {
                     "type": "integer",
-                    "default": 32,
+                    "default": 8,
                     "minimum": 1,
                     "description": "Grids per osmium pass over the source .pbf.",
                     "help_text": "One pass reads the whole .pbf, so batching many extracts into it avoids re-reading a country per grid. The ceiling is memory: --strategy=smart holds a set of object ids per extract."
@@ -182,7 +171,7 @@
             }
         },
         "tiles": {
-            "title": "Tile pyramid",
+            "title": "Map tiles",
             "type": "object",
             "properties": {
                 "base_zoom": {
@@ -191,15 +180,15 @@
                     "minimum": 0,
                     "maximum": 22,
                     "description": "Shallowest zoom level of the pyramid, and the unit tiling is parallelised over.",
-                    "help_text": "One task per base-zoom tile, each holding every source render overlapping it in memory: about 1.1 GB at z12 for 0.42 m/px sources, a quarter of that per level higher. Raise it on a memory-constrained machine. Nothing is generated below it -- the viewer shows OSM's own tiles there instead."
+                    "help_text": "One task per base-zoom tile, cutting everything under it: a tile one zoom shallower covers four times the ground and needs about four times the memory. Raise it on a memory-constrained machine. Nothing is generated below it -- the viewer shows OSM's own tiles there instead."
                 },
                 "max_zoom": {
                     "type": "integer",
-                    "default": 16,
+                    "default": 15,
                     "minimum": 0,
                     "maximum": 22,
                     "description": "Deepest zoom level to generate.",
-                    "help_text": "The zoom the map is cut at full detail; the layer table in make_vector_tiles.py brings detail in counting down from it (e.g. undergrowth from max_zoom-2). Vector tiles stay sharp when the viewer overzooms them, so z16 is enough for the full 0.42 m/px LiDAR detail. Each extra level quadruples the file count and pushes every detail one zoom deeper."
+                    "help_text": "The zoom the map is cut at full detail, in 512 px tiles (MapLibre's convention); the layer table in make_vector_tiles.py brings detail in counting down from it (e.g. undergrowth from max_zoom-2). Vector tiles stay sharp when the viewer overzooms them, so z15 -- as much detail per screen pixel as z16 in 256 px tiles -- is enough for the full LiDAR detail. Each extra level roughly quadruples the archive."
                 }
             }
         }

@@ -15,8 +15,9 @@ process RENDER_INI {
     path 'effective.ini', emit: ini
 
     script:
-    // Empty vectorconf disables vector rendering, which is what a region with no OSM extract needs.
-    def vectorconf = params.osm_pbf ? 'osm.txt' : ''
+    // Empty vectorconf disables karttapullautin's shapefile pass, which is what a region with no
+    // OSM extract needs.
+    def vectorconf = params.osm_pbf && params.vectorconf ? 'osm.txt' : ''
     """
     render_ini.py \\
         --in-ini user.ini \\

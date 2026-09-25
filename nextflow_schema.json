@@ -2,13 +2,16 @@
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "$id": "https://raw.githubusercontent.com/grst/mapant/main/nextflow_schema.json",
     "title": "mapant pipeline parameters",
-    "description": "Generate a web-mercator raster tile pyramid from a list of LiDAR tiles using karttapullautin.",
+    "description": "Generate a web-mercator vector map (PMTiles) from a list of LiDAR tiles using karttapullautin.",
     "type": "object",
     "$defs": {
         "input_output": {
             "title": "Input and output",
             "type": "object",
-            "required": ["tiles_csv", "outdir"],
+            "required": [
+                "tiles_csv",
+                "outdir"
+            ],
             "properties": {
                 "tiles_csv": {
                     "type": "string",
@@ -24,7 +27,7 @@
                     "format": "file-path",
                     "exists": true,
                     "description": "OpenStreetMap extract used to draw roads, buildings and water.",
-                    "help_text": "Optional. Without it karttapullautin renders contours, cliffs and vegetation only. A single country-sized .pbf is fine: the pipeline cuts per-grid extracts from it, which it has to, because karttapullautin re-reads the unpacked shapefile set once per rendered tile."
+                    "help_text": "Optional. Without it the map has contours, cliffs and vegetation only. A single country-sized .pbf is fine: the pipeline cuts a per-grid extract from it, and each grid's renderer is handed only its own."
                 },
                 "pullauta_ini": {
                     "type": "string",
@@ -37,25 +40,35 @@
                     "type": "string",
                     "format": "file-path",
                     "exists": true,
-                    "description": "karttapullautin shape mapping file (osm.txt) translating OSM tags to map symbols."
+                    "description": "Shape mapping file (osm.txt) translating OSM tags to ISOM map symbols."
                 },
                 "outdir": {
                     "type": "string",
                     "format": "directory-path",
                     "default": "results",
-                    "description": "Where the tile pyramid, QC files and provenance are written."
+                    "description": "Where the map archive, its viewer, QC files and provenance are written."
                 },
                 "publish_mode": {
                     "type": "string",
                     "default": "copy",
-                    "enum": ["copy", "link", "symlink", "rellink"],
+                    "enum": [
+                        "copy",
+                        "link",
+                        "symlink",
+                        "rellink"
+                    ],
                     "description": "How published files leave the work directory.",
-                    "help_text": "'copy' works everywhere including object stores. 'link' (hardlink) is far cheaper for the millions of small files a large run produces, but needs outdir and workDir on one filesystem. Never use 'move': it breaks -resume."
+                    "help_text": "'copy' works everywhere including object stores. 'link' (hardlink) avoids copying the country-sized archive, but needs outdir and workDir on one filesystem. Never use 'move': it breaks -resume."
                 },
                 "map_title": {
                     "type": "string",
                     "default": "mapant",
-                    "description": "Title shown in the generated HTML viewer."
+                    "description": "Title of the map, shown in the viewer and written into the archive's metadata."
+                },
+                "attribution": {
+                    "type": "string",
+                    "description": "Credit for the LiDAR data, shown on the map next to OpenStreetMap and karttapullautin.",
+                    "help_text": "HTML is allowed, e.g. '<a href=\"https://geodaten.bayern.de\">Bayerische Vermessungsverwaltung</a>'. Most open LiDAR licences require it."
                 }
             }
         },
@@ -100,13 +113,6 @@
                     "minimum": 1,
                     "description": "How many times to re-run a grid while isolating tiles that crash the renderer.",
                     "help_text": "A karttapullautin panic aborts the whole process, so the grid is re-run -- it resumes by itself, skipping finished tiles. An attempt that makes no progress is retried single-threaded, which identifies the offending tile unambiguously; that tile is then recorded in qc/pullauta_failures.tsv and skipped, while still serving as a neighbour for the tiles around it."
-                },
-                "png_variant": {
-                    "type": "string",
-                    "default": "depr",
-                    "enum": ["depr", "plain"],
-                    "description": "Which karttapullautin render to tile: with ('depr') or without depression markings.",
-                    "help_text": "Keeping only one halves the intermediate storage of a large run (~90 GB rather than ~175 GB for Bavaria)."
                 }
             }
         },
@@ -139,7 +145,7 @@
             "properties": {
                 "osm_chunk_size": {
                     "type": "integer",
-                    "default": 32,
+                    "default": 8,
                     "minimum": 1,
                     "description": "Grids per osmium pass over the source .pbf.",
                     "help_text": "One pass reads the whole .pbf, so batching many extracts into it avoids re-reading a country per grid. The ceiling is memory: --strategy=smart holds a set of object ids per extract."
@@ -154,14 +160,18 @@
                 "osm_strategy": {
                     "type": "string",
                     "default": "smart",
-                    "enum": ["simple", "complete_ways", "smart"],
+                    "enum": [
+                        "simple",
+                        "complete_ways",
+                        "smart"
+                    ],
                     "description": "osmium extract strategy.",
                     "help_text": "'smart' keeps ways and multipolygon relations whole, so a lake or road crossing the boundary still renders as one object. 'simple' is faster but cuts them."
                 }
             }
         },
         "tiles": {
-            "title": "Tile pyramid",
+            "title": "Map tiles",
             "type": "object",
             "properties": {
                 "base_zoom": {
@@ -170,32 +180,37 @@
                     "minimum": 0,
                     "maximum": 22,
                     "description": "Shallowest zoom level of the pyramid, and the unit tiling is parallelised over.",
-                    "help_text": "One task per base-zoom tile, each holding every source render overlapping it in memory: about 1.1 GB at z12 for 0.42 m/px sources, a quarter of that per level higher. Raise it on a memory-constrained machine. Nothing is generated below it -- the viewer shows OSM's own tiles there instead."
+                    "help_text": "One task per base-zoom tile, cutting everything under it: a tile one zoom shallower covers four times the ground and needs about four times the memory. Raise it on a memory-constrained machine. Nothing is generated below it -- the viewer shows OSM's own tiles there instead."
                 },
                 "max_zoom": {
                     "type": "integer",
-                    "default": 18,
+                    "default": 15,
                     "minimum": 0,
                     "maximum": 22,
                     "description": "Deepest zoom level to generate.",
-                    "help_text": "z18 is about 0.4 m/px at central-European latitudes, which matches karttapullautin's 0.4233 m/px output. Each extra level quadruples the file count: ~8.8 M tiles for Bavaria at z18 against ~2.2 M at z17."
-                },
-                "tile_format": {
-                    "type": "string",
-                    "default": "webp",
-                    "enum": ["webp", "png"],
-                    "description": "Image format of the published tiles; both are lossless.",
-                    "help_text": "WebP is smaller than PNG at identical pixels -- 23% measured by tiling one render both ways; upstream quotes ~25%. Choose 'png' only for a consumer that cannot read WebP; every browser released since 2020 can. The published extension follows the format, and so does the generated viewer."
+                    "help_text": "The zoom the map is cut at full detail, in 512 px tiles (MapLibre's convention); the layer table in make_vector_tiles.py brings detail in counting down from it (e.g. undergrowth from max_zoom-2). Vector tiles stay sharp when the viewer overzooms them, so z15 -- as much detail per screen pixel as z16 in 256 px tiles -- is enough for the full LiDAR detail. Each extra level roughly quadruples the archive."
                 }
             }
         }
     },
     "allOf": [
-        { "$ref": "#/$defs/input_output" },
-        { "$ref": "#/$defs/region" },
-        { "$ref": "#/$defs/grids" },
-        { "$ref": "#/$defs/download" },
-        { "$ref": "#/$defs/osm" },
-        { "$ref": "#/$defs/tiles" }
+        {
+            "$ref": "#/$defs/input_output"
+        },
+        {
+            "$ref": "#/$defs/region"
+        },
+        {
+            "$ref": "#/$defs/grids"
+        },
+        {
+            "$ref": "#/$defs/download"
+        },
+        {
+            "$ref": "#/$defs/osm"
+        },
+        {
+            "$ref": "#/$defs/tiles"
+        }
     ]
 }

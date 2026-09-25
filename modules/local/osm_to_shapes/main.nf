@@ -1,9 +1,11 @@
-// Turn a grid's OSM extract into the zipped ESRI Shapefile set karttapullautin renders vectors from,
-// reprojected into the grid's own CRS.
+// Turn a grid's OSM extract into an ESRI Shapefile set, reprojected into the grid's own CRS.
 //
-// Per grid is a feasibility requirement, not an optimisation: karttapullautin unzips the archive once
-// per invocation and re-lists the unpacked directory *for every tile it renders*, so the
-// Bavaria-wide archive would mean unpacking 30 GB per grid and walking it a hundred times.
+// They are karttapullautin's input: it matches each shape to its ISOM code by the rules file and
+// writes it, cropped per tile, next to the LiDAR vectors. In the grid's CRS because that is the
+// one karttapullautin renders in.
+//
+// Per grid rather than once for the region: each PULLAUTA_GRID task stages only its own grid's
+// archive, and a Bavaria-wide archive is never staged anywhere.
 process OSM_TO_SHAPES {
     tag "${grid_id}"
     label 'process_low'
@@ -22,7 +24,8 @@ process OSM_TO_SHAPES {
     #                                  buys nothing on an extract this small
     #   -skipfailures               -- OSM is full of geometries that cannot be expressed as a
     #                                  shapefile feature; one of them must not fail the grid
-    #   -t_srs                      -- karttapullautin cannot reproject
+    #   -t_srs                      -- karttapullautin draws the shapes in the grid's own CRS,
+    #                                  and reprojects them to WGS84 with everything else
     ogr2ogr \\
         --config OSM_USE_CUSTOM_INDEXING NO \\
         -skipfailures \\
@@ -33,17 +36,14 @@ process OSM_TO_SHAPES {
         -t_srs ${crs}
 
     if compgen -G 'output_shapes/*.shp' > /dev/null; then
-        # -j to flatten: karttapullautin expects the layers at the root of the archive.
-        zip -q -j shapes/map.shp.zip output_shapes/*
+        # -j to flatten: karttapullautin pairs .shp with .dbf by name, so the layers have to sit
+        # at the root of the archive.
+        zip -q -j 'shapes/${grid_id}.shp.zip' output_shapes/*
         printf '%s: %s layer(s)\\n' '${grid_id}' "\$(ls output_shapes/*.shp | wc -l)" >&2
     else
-        # No OSM features worth drawing in this grid. A sentinel rather than an empty archive: given a
-        # zip, karttapullautin takes its has_zip path and expects the vector render to have produced
-        # its intermediate images.
-        #
-        # Written here rather than copied from assets/ because a process must not reach for
-        # \$projectDir -- on an executor without a shared filesystem that path does not exist.
-        printf 'no OSM features in this grid\\n' > shapes/NONE
+        # No OSM features worth drawing in this grid. A sentinel rather than an empty archive, so
+        # that the join downstream still has something to carry: PULLAUTA_GRID stages nothing for it.
+        printf 'no OSM features in this grid\\n' > 'shapes/${grid_id}.NONE'
         printf '%s: no OSM features; contours and vegetation only\\n' '${grid_id}' >&2
     fi
 
@@ -53,6 +53,6 @@ process OSM_TO_SHAPES {
     stub:
     """
     mkdir -p shapes
-    : > shapes/map.shp.zip
+    : > 'shapes/${grid_id}.shp.zip'
     """
 }

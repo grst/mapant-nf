@@ -75,13 +75,15 @@ check() {
 echo '==> checking'
 check 'the run finished successfully' 0 "$rc"
 
-# The whole point: one bad file must not cost the other three tiles in its grid.
-rendered="$(find "${SCRATCH}/work" -name '*_depr.pgw' -printf '%f\n' 2> /dev/null \
-    | sed 's/_depr\.pgw$//' | sort -u | tr '\n' ' ')"
+# The whole point: one bad file must not cost the other three tiles in its grid. Counted from the
+# vector bundles, which are what a rendered tile leaves behind: the images are deleted once the
+# bundle is made.
+rendered="$(find "${SCRATCH}/work" -name '*_vec' -type d -printf '%f\n' 2> /dev/null \
+    | sed 's/_vec$//' | sort -u | tr '\n' ' ')"
 check 'the three intact tiles rendered' '590_5268 590_5269 591_5268 ' "$rendered"
 
-check 'tiles were published' yes \
-    "$([ "$(find "${SCRATCH}/out/tiles" -name '*.webp' 2> /dev/null | wc -l)" -gt 0 ] && echo yes || echo no)"
+check 'the map was published' yes \
+    "$([ -s "${SCRATCH}/out/map/mapant.pmtiles" ] && echo yes || echo no)"
 
 dl="${SCRATCH}/out/qc/download_failures.tsv"
 check 'one download failure recorded' 1 "$(tail -n +2 "$dl" 2> /dev/null | wc -l)"

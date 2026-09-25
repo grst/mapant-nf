@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          # 3.13 rather than the newest: it is what containers/k2t/Containerfile pins, and the point
+          # 3.13 rather than the newest: it is what containers/tiler/Containerfile pins, and the point
           # of these tests is the geometry the container will actually run.
           python-version: '3.13'
           cache: pip

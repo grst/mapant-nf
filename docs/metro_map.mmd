@@ -1,5 +1,6 @@
 %% mapant metro map -- the source of docs/images/metro_map.svg, in nf-metro's dialect of Mermaid
-%% (https://github.com/seqeralabs/nf-metro). Regenerate with exactly:
+%% (https://github.com/seqeralabs/nf-metro). Regenerate with nf-metro 1.1.0 -- 2.0 and 2.1 abort on
+%% this map's routing ("wrong-axis opening") -- and exactly these flags:
 %%
 %%     nf-metro render docs/metro_map.mmd -o docs/images/metro_map.svg \
 %%         --font-scale 1.3 --section-x-gap 75 --responsive --embed-font --validate --strict
@@ -15,24 +16,25 @@
 %% progress overlay:  nf-metro serve docs/metro_map.mmd  +  nextflow run . -with-weblog <url>
 %%
 %% Lines are the pipeline's four routes, not its dataflow edges: what is optional (osm), what is
-%% configuration (ini) and what bypasses the render entirely (viewer) is the thing worth seeing.
+%% configuration (ini) and what bypasses the render entirely (viewer) is the thing worth seeing. The
+%% osm line ends at the render: karttapullautin draws the shapes into the map itself.
 
 %%metro title: mapant
 %%metro style: nfcore
 %%metro legend: bl
 
-%%metro line: lidar | LiDAR tiles to map pyramid | #24b064
-%%metro line: osm | OSM vectors (optional: --osm_pbf) | #3f7fd6
+%%metro line: lidar | LiDAR tiles to map archive | #24b064
+%%metro line: osm | OSM shapes (optional: --osm_pbf) | #3f7fd6
 %%metro line: ini | Renderer configuration | #e6a817 | dashed
-%%metro line: viewer | Viewer, built from the plan | #9a6fb0 | dotted
+%%metro line: viewer | Style and viewer, built from the plan | #9a6fb0 | dotted
 
 %%metro file: tiles_csv | CSV
 %%metro file: osm_pbf | PBF
 %%metro file: pullauta_ini | INI
 %%metro files: laz_in | LAZ
 %%metro files: qc_out | TSV
-%%metro dir: tiles_out | WEBP
-%%metro file: viewer_out | HTML
+%%metro file: tiles_out | PMTILES
+%%metro files: viewer_out | JSON
 
 %%metro off_track: qc_out
 
@@ -41,8 +43,9 @@
 %%metro process: OSM_EXTRACT | OSM_EXTRACT
 %%metro process: OSM_TO_SHAPES | OSM_TO_SHAPES
 %%metro process: PULLAUTA_GRID | PULLAUTA_GRID
-%%metro process: MAKE_TILES | MAKE_TILES
-%%metro process: TILE_VIEWER | TILE_VIEWER
+%%metro process: MAKE_VECTOR_TILES | MAKE_VECTOR_TILES
+%%metro process: MERGE_PMTILES | MERGE_PMTILES
+%%metro process: MAKE_VIEWER | MAKE_VIEWER
 
 graph LR
     subgraph plan ["Plan (once per run)"]
@@ -56,7 +59,18 @@ graph LR
         pullauta_ini -->|ini| RENDER_INI
     end
 
-    subgraph vectors ["OSM vectors (per grid)"]
+    subgraph render ["Render (per grid)"]
+        %%metro entry: left | lidar, ini
+        %%metro exit: right | lidar
+        laz_in[ ]
+        PULLAUTA_GRID[PULLAUTA_GRID]
+        qc_out[ ]
+
+        laz_in -->|lidar| PULLAUTA_GRID
+        PULLAUTA_GRID -->|lidar| qc_out
+    end
+
+    subgraph vectors ["OSM shapes (per grid)"]
         %%metro entry: left | osm
         %%metro exit: right | osm
         osm_pbf[ ]
@@ -67,26 +81,21 @@ graph LR
         OSM_EXTRACT -->|osm| OSM_TO_SHAPES
     end
 
-    subgraph render ["Render (per grid)"]
-        %%metro entry: left | lidar, osm, ini
+    subgraph tile ["Tile (per parent tile)"]
+        %%metro entry: left | lidar
         %%metro exit: right | lidar
-        laz_in[ ]
-        PULLAUTA_GRID[PULLAUTA_GRID]
-        qc_out[ ]
-
-        laz_in -->|lidar| PULLAUTA_GRID
-        PULLAUTA_GRID -->|lidar| qc_out
+        MAKE_VECTOR_TILES[MAKE_VECTOR_TILES]
     end
 
-    subgraph tile ["Tile (per parent tile)"]
-        %%metro entry: left | lidar, viewer
-        MAKE_TILES[MAKE_TILES]
-        TILE_VIEWER[TILE_VIEWER]
+    subgraph publish ["Publish (once per run)"]
+        %%metro entry: left | lidar, viewer, ini
+        MERGE_PMTILES[MERGE_PMTILES]
+        MAKE_VIEWER[MAKE_VIEWER]
         tiles_out[ ]
         viewer_out[ ]
 
-        MAKE_TILES -->|lidar| tiles_out
-        TILE_VIEWER -->|viewer| viewer_out
+        MERGE_PMTILES -->|lidar| tiles_out
+        MAKE_VIEWER -->|viewer| viewer_out
     end
 
     %% Inter-section edges
@@ -94,5 +103,7 @@ graph LR
     OSM_TO_SHAPES -->|osm| PULLAUTA_GRID
     PLAN_GRIDS -->|lidar| PULLAUTA_GRID
     RENDER_INI -->|ini| PULLAUTA_GRID
-    PULLAUTA_GRID -->|lidar| MAKE_TILES
-    PLAN_GRIDS -->|viewer| TILE_VIEWER
+    PULLAUTA_GRID -->|lidar| MAKE_VECTOR_TILES
+    MAKE_VECTOR_TILES -->|lidar| MERGE_PMTILES
+    PLAN_GRIDS -->|viewer| MAKE_VIEWER
+    RENDER_INI -->|ini| MAKE_VIEWER

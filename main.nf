@@ -1,10 +1,14 @@
 #!/usr/bin/env nextflow
 /*
- * mapant -- generate a web-mercator map pyramid from a list of LiDAR tiles.
+ * mapant -- generate a web-mercator vector map (PMTiles) from a list of LiDAR tiles.
  *
  * Give it a CSV of laz tiles (url, checksum, bbox, CRS), an OSM extract and a karttapullautin
- * configuration, and it produces a z/x/y directory of lossless WebP (or PNG) tiles. Nothing here is
- * specific to Bavaria; the input contract is assets/schema_tiles.json.
+ * configuration, and it produces the map as one PMTiles archive of vector tiles, with the style
+ * that draws them. Nothing here is specific to Bavaria; the input contract is assets/schema_tiles.json.
+ *
+ * karttapullautin does all the cartography: given a grid's LiDAR and its OSM shapes, it writes each
+ * tile's map as per-layer GeoJSON in WGS84, already in its published form. MAKE_VECTOR_TILES hands
+ * those files to tippecanoe untouched and cuts one parent's archive; MERGE_PMTILES joins them.
  *
  * See README.md for the design, and each run's published plan_summary.txt for its own numbers.
  */
@@ -16,8 +20,9 @@ include { RENDER_INI    } from './modules/local/render_ini'
 include { OSM_EXTRACT   } from './modules/local/osm_extract'
 include { OSM_TO_SHAPES } from './modules/local/osm_to_shapes'
 include { PULLAUTA_GRID } from './modules/local/pullauta_grid'
-include { MAKE_TILES    } from './modules/local/make_tiles'
-include { TILE_VIEWER   } from './modules/local/tile_viewer'
+include { MAKE_VECTOR_TILES } from './modules/local/make_vector_tiles'
+include { MERGE_PMTILES } from './modules/local/merge_pmtiles'
+include { MAKE_VIEWER   } from './modules/local/make_viewer'
 
 workflow {
 
@@ -55,7 +60,7 @@ workflow {
         .map { row -> tuple(row.grid_id, row.crs) }
 
     // ---------------------------------------------------------------------
-    // OSM vectors (optional: with no .pbf, karttapullautin draws contours and vegetation only)
+    // OSM shapes (optional: with no .pbf the map is contours and vegetation only)
     // ---------------------------------------------------------------------
     ch_chunks = params.osm_pbf
         ? PLAN_GRIDS.out.osm_chunks.flatten().map { chunk -> tuple(chunk.baseName, chunk) }
@@ -75,10 +80,10 @@ workflow {
             .join(ch_grid_crs)
     )
 
-    // remainder: true so that grids with no shapes -- either because there is no pbf at all, or
-    // because their extract held no drawable features -- still reach PULLAUTA_GRID, carrying the
-    // sentinel instead of an archive. Without it those grids would silently vanish from the run.
-    ch_pullauta_in = ch_grid_csv
+    // A grid with no shapes -- no pbf at all, or an extract with nothing drawable in it -- carries
+    // the sentinel OSM_TO_SHAPES wrote instead of an archive, and remainder: true is what keeps it
+    // in the run. Without it those grids would silently vanish before they were rendered.
+    ch_grid_shapes = ch_grid_csv
         .join(OSM_TO_SHAPES.out.shapes, remainder: true)
         .map { grid_id, csv, shapes ->
             tuple(grid_id, csv, shapes ?: file("${projectDir}/assets/NONE"))
@@ -88,16 +93,15 @@ workflow {
     // Render
     // ---------------------------------------------------------------------
     PULLAUTA_GRID(
-        ch_pullauta_in,
+        ch_grid_shapes,
         ch_ini,
         file(params.vectorconf ?: "${projectDir}/assets/NONE")
     )
 
-    // One item per rendered tile. transpose() expands the per-grid lists of PNGs and PGWs in step;
-    // they stay aligned because both globs are sorted and share their stems.
-    ch_tile = PULLAUTA_GRID.out.rendered
+    // One item per rendered tile, keyed by its name for the join to its parent.
+    ch_tile_vec = PULLAUTA_GRID.out.vectors
         .transpose()
-        .map { _grid_id, png, pgw -> tuple(png.simpleName.replaceAll(/_depr$/, ''), png, pgw) }
+        .map { _grid_id, bundle -> tuple(bundle.name.replaceAll(/_vec$/, ''), bundle) }
 
     // ---------------------------------------------------------------------
     // Tile
@@ -110,7 +114,7 @@ workflow {
     // that never reaches it -- so one tile that failed to render would silently delete every
     // web-mercator tile overlapping it, and the run would still report success. That is the exact
     // failure this pipeline exists to survive; tests/test_failure_injection.sh covers it.
-    ch_parent = PLAN_GRIDS.out.parent_index
+    ch_parent_vec = PLAN_GRIDS.out.parent_index
         .splitCsv(header: true)
         .map { row ->
             tuple(
@@ -119,16 +123,28 @@ workflow {
                 row.n_core as int
             )
         }
-        .combine(ch_tile, by: 0)
-        .map { _tile, parent, n_core, png, pgw -> tuple(groupKey(parent, n_core), png, pgw) }
+        .combine(ch_tile_vec, by: 0)
+        .map { _tile, parent, n_core, bundle -> tuple(groupKey(parent, n_core), bundle) }
         .groupTuple(remainder: true)
-        .map { key, pngs, pgws -> tuple(key.getGroupTarget(), pngs, pgws) }
+        .map { key, bundles -> tuple(key.getGroupTarget(), bundles) }
 
-    MAKE_TILES(ch_parent)
+    MAKE_VECTOR_TILES(ch_parent_vec)
 
-    // The pyramid stops at base_zoom; the viewer shows OSM's own tiles below it, so there is nothing
-    // to reduce and no barrier over every finished tile.
-    TILE_VIEWER(PLAN_GRIDS.out.parent_index)
+    // Written into the archive and into the style, so whatever shows the map shows the credits.
+    def attribution = [
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',
+        params.attribution,
+        '<a href="https://github.com/karttapullautin/karttapullautin">karttapullautin</a>'
+    ].findAll { credit -> credit }.join(', ')
+
+    MERGE_PMTILES(MAKE_VECTOR_TILES.out.pmtiles.collect(), attribution)
+
+    MAKE_VIEWER(
+        PLAN_GRIDS.out.parent_index,
+        ch_ini,
+        channel.fromPath("${projectDir}/assets/viewer/*").collect(),
+        attribution
+    )
 
     // collectFile rather than a concatenation process: no container, no task, and the header is
     // kept exactly once.
@@ -166,14 +182,7 @@ workflow {
     }
 
     publish:
-    // Each MAKE_TILES task owns a disjoint subtree of the pyramid, so publishing them all into one
-    // directory is a plain union with no possibility of a collision.
-    //
-    // flatten() is for the end-of-run "Outputs:" summary, not for the publishing: Nextflow caps that
-    // listing at ten *channel items* but prints each item whole, and one MAKE_TILES item is the
-    // ~22,000 tiles of a full z11..z18 subtree. Ten of those is megabytes of tile names on the
-    // console. One path per item makes the cap bite. Same files, same paths, same union.
-    tiles = MAKE_TILES.out.tiles.flatten().mix(TILE_VIEWER.out.viewer)
+    map = MERGE_PMTILES.out.pmtiles.mix(MAKE_VIEWER.out.files.flatten())
     qc = ch_render_failures.mix(ch_download_failures, PULLAUTA_GRID.out.log)
     plan = PLAN_GRIDS.out.summary.mix(
         PLAN_GRIDS.out.grid_index,
@@ -183,10 +192,9 @@ workflow {
 }
 
 output {
-    // path '.' keeps each file's task-relative path, so 'tiles/12/2145/1423.webp' lands at
-    // <outputDir>/tiles/12/2145/1423.webp and the pyramid assembles itself from many tasks.
-    tiles {
-        path '.'
+    // The archive next to its viewer, which loads it by that relative name.
+    map {
+        path 'map'
         mode params.publish_mode
     }
 

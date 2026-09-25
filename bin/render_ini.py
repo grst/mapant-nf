@@ -22,6 +22,19 @@ from pathlib import Path
 #   karttapullautin never does. Extra outputs would be pruned moments later.
 # experimental_use_in_memory_fs: copies every input laz into RAM, which at ~200 MB per tile and a
 #   hundred tiles per grid is not survivable.
+# vectorvege: karttapullautin's vector export -- contours, form lines, knolls, cliffs, vegetation,
+#   and the OSM shapes it matches -- written per tile, already in its published form.
+# geojson_wgs84: those files in longitude/latitude, the only CRS tippecanoe reads, so
+#   MAKE_VECTOR_TILES hands them over untouched. It needs `epsg`, which is per grid and so is set
+#   by run_pullauta.py from the grid CSV, not here.
+# batchmerge: off. The pipeline cuts tiles per parent; merging a grid into one file is a reduction
+#   nothing reads.
+# output_dxf: off, because it is on in most inis (including this pipeline's own asset) and writes a
+#   second, text copy of every vector that nothing downstream reads.
+# vectorconf: the OSM rules file, staged as osm.txt, or empty when the run has no OSM extract --
+#   an empty value is what turns karttapullautin's shapefile pass off.
+#
+# None of it is conditional: a vector pyramid is the only thing this pipeline builds.
 #
 # Writing batch, processes, savetempfiles and savetempfolders unconditionally also guarantees they
 # exist: karttapullautin reads those four with .unwrap(), so an absent one is a panic rather than a
@@ -33,6 +46,10 @@ OWNED = {
     "savetempfiles": "0",
     "savetempfolders": "0",
     "experimental_use_in_memory_fs": "0",
+    "vectorvege": "1",
+    "geojson_wgs84": "1",
+    "batchmerge": "0",
+    "output_dxf": "0",
 }
 
 
@@ -58,8 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--vectorconf",
         default="",
-        help="shape mapping file; empty disables vector rendering, which is what a laz-only "
-        "region (no OSM pbf) needs",
+        help="the OSM rules file name as staged next to the ini; empty for a run without OSM",
     )
     args = ap.parse_args(argv)
 

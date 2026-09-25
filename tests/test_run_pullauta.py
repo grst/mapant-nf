@@ -11,6 +11,8 @@ behaviour exactly, and the recovery logic is tested against it.
 from __future__ import annotations
 
 import csv
+import gzip
+import json
 import os
 import shutil
 import subprocess
@@ -54,6 +56,11 @@ class Grid:
                     (self.path / "in" / f"{t}.laz").touch()
 
     def run(self, processes: int = 2, **stub_env: str) -> subprocess.CompletedProcess[str]:
+        # The key bin/render_ini.py owns unconditionally: every render this pipeline does is a
+        # vector render, so the stub is always asked for one.
+        ini = self.path / "effective.ini"
+        if "vectorvege = 1" not in ini.read_text():
+            ini.write_text(ini.read_text() + "\nvectorvege = 1\n")
         return subprocess.run(
             [sys.executable, str(SCRIPT),
              "--grid-id", "test_grid",
@@ -61,14 +68,16 @@ class Grid:
              "--ini", "effective.ini",
              "--processes", str(processes),
              "--max-attempts", "6",
-             "--variant", "depr",
              "--log", "pullauta.log",
              "--failures", "failures.tsv"],
             cwd=self.path, env=self.env | stub_env, capture_output=True, text=True,
         )
 
     def rendered(self) -> list[str]:
-        return sorted(p.name.removesuffix("_depr.pgw") for p in self.out.glob("*_depr.pgw"))
+        """
+        The tiles that came out, which is the bundles: the images are deleted once they are made.
+        """
+        return sorted(p.name.removesuffix("_vec") for p in self.out.glob("*_vec"))
 
     def failures(self) -> list[dict[str, str]]:
         with (self.path / "failures.tsv").open(newline="") as fh:
@@ -95,7 +104,7 @@ def test_every_core_tile_is_rendered_and_halo_tiles_are_not(grid):
     assert proc.returncode == 0
     assert grid.rendered() == ["a1", "a2"]
     assert grid.failures() == []
-    assert not list(grid.out.glob("h[12].png")), "halo placeholders were left behind"
+    assert not (grid.out / "h1_vec").exists(), "a halo tile was rendered"
 
 
 def test_a_tile_that_panics_is_recorded_and_skipped(grid):
@@ -108,9 +117,10 @@ def test_a_tile_that_panics_is_recorded_and_skipped(grid):
     assert failure["tile"] == "a2"
     assert "panicked at" in failure["panic_message"]
     assert "could not read LAZ points" in failure["log_tail"]
-    assert not (grid.out / "a2.png").exists(), "the blacklist placeholder was left behind"
-    # A zero-byte PNG in out/ would be published as a corrupt map tile.
-    assert not [p for p in grid.out.glob("*.png") if p.stat().st_size == 0]
+    # The placeholder that blacklisted a2 is a zero-byte PNG in out/. Nothing may survive that has
+    # not been through a full render: no bundle for a2, and no leftover image of any kind.
+    assert not (grid.out / "a2_vec").exists()
+    assert not list(grid.out.glob("*.png"))
 
 
 def test_two_panicking_tiles_are_isolated_one_at_a_time(grid):
@@ -133,8 +143,6 @@ def test_a_tile_abandoned_mid_write_is_re_rendered(grid):
 
     assert proc.returncode == 0
     assert "a3" in grid.rendered()
-    # The _depr variant, because the plain one is pruned at the end (params.png_variant).
-    assert (grid.out / "a3_depr.png").read_bytes().endswith(IEND)
     assert "quarantined" in proc.stderr
 
 
@@ -171,18 +179,90 @@ def test_a_core_tile_whose_laz_never_arrived_is_a_recorded_hole(grid):
     assert "laz file unavailable" in failure["reason"]
 
 
-def test_resuming_a_partly_finished_grid_re_renders_only_what_is_missing(grid):
+def test_a_later_attempt_re_renders_only_what_is_missing(grid):
     """
-    This is karttapullautin's own skip-if-output-exists behaviour, which the pipeline leans on for
-    both retries and the blacklist. If it broke, a retried grid would redo hours of work.
+    karttapullautin skips a file whose output image already exists, which is what makes the attempt
+    ladder affordable: a panic on the fifth tile of a hundred must not cost the four before it. The
+    same behaviour is what the halo placeholders and the blacklist exploit.
+
+    Within one invocation, which is the only place it is relied on -- a Nextflow retry gets a fresh
+    work directory, and the images are deleted once the bundles are made.
     """
     grid.setup(["a1", "a2", "a3"])
-    grid.run()
-    for stale in grid.out.glob("a2*"):
-        stale.unlink()
+
+    proc = grid.run(processes=1, STUB_CRASH_TILES="a2")
+
+    assert proc.returncode == 0
+    assert grid.rendered() == ["a1", "a3"]
+    assert grid.log().count("in/a1.laz ->") == 1, "a1 was rendered again after the panic on a2"
+
+
+def test_vector_output_is_bundled_per_tile_and_gzipped(grid):
+    """
+    The bundle is what the vector fan-in groups by parent, so its shape is a contract: one
+    directory per core tile holding each layer's GeoJSON compressed, under the name karttapullautin
+    gave it, and nothing of it left loose in out/ where the publish step would pick it up.
+    """
+    grid.setup(["a1", "a2"], ("h1",))
+    proc = grid.run()
+
+    assert proc.returncode == 0, proc.stderr
+    for stem in ("a1", "a2"):
+        bundle = grid.out / f"{stem}_vec"
+        assert bundle.is_dir()
+        layers = ("cliffs", "contours", "dotknolls", "formlines", "osm_areas", "osm_lines",
+                  "undergrowth", "vegetation", "yellow")
+        assert sorted(p.name for p in bundle.iterdir()) == [
+            f"{stem}_{layer}.geojson.gz" for layer in layers
+        ]
+        with gzip.open(bundle / f"{stem}_contours.geojson.gz", "rt") as fh:
+            assert json.load(fh)["type"] == "FeatureCollection"
+
+    assert not list(grid.out.glob("*.geojson")), "uncompressed GeoJSON left in out/"
+    # The halo tile is only there for its points, so it gets no bundle either.
+    assert not (grid.out / "h1_vec").exists()
+
+
+def test_the_rendered_images_do_not_survive_the_bundle(grid):
+    """
+    Nothing reads them since the pyramid became vector-only, and at 1.5 MB a tile they would be a
+    hundred gigabytes of work directories across Bavaria. They cannot go any earlier than this: an
+    image closed with an IEND chunk is how this script knows a tile finished, and how
+    karttapullautin knows not to render it again on a retry.
+    """
+    grid.setup(["a1"])
 
     proc = grid.run()
 
-    assert proc.returncode == 0
-    assert grid.rendered() == ["a1", "a2", "a3"]
-    assert grid.log().count("in/a2.laz ->") == 1
+    assert proc.returncode == 0, proc.stderr
+    assert grid.rendered() == ["a1"]
+    assert not list(grid.out.glob("*.png"))
+    assert not list(grid.out.glob("*.pgw"))
+    # ...while the tile is still counted as rendered, which is what keeps a good grid from failing.
+    assert "1 tile(s) rendered" in proc.stderr
+
+
+def test_the_grid_crs_reaches_the_renderer_as_epsg(grid):
+    """
+    karttapullautin reprojects its GeoJSON to WGS84 from `epsg`, which is per grid and so cannot be
+    in the shared ini: without it every coordinate would be read in the wrong system.
+    """
+    grid.setup(["a1"])
+    proc = grid.run()
+
+    assert proc.returncode == 0, proc.stderr
+    assert "epsg = 25832" in (grid.path / "pullauta.ini").read_text()
+
+
+def test_a_grid_with_two_crss_is_refused(grid):
+    """One `epsg` per render: a grid straddling two zones would be reprojected wrongly, not fail."""
+    grid.setup(["a1", "a2"])
+    csv_path = grid.path / "grid.csv"
+    lines = csv_path.read_text().splitlines()
+    lines[-1] = lines[-1].replace("EPSG:25832", "EPSG:25833")
+    csv_path.write_text("\n".join(lines) + "\n")
+
+    proc = grid.run()
+
+    assert proc.returncode != 0
+    assert "exactly one EPSG CRS" in proc.stderr

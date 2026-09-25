@@ -26,7 +26,9 @@ from __future__ import annotations
 import argparse
 import configparser
 import csv
+import gzip
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -41,6 +43,10 @@ FAILURE_COLUMNS = (
 # "the process was killed while writing this tile" -- which matters because pullauta's own resume
 # logic only tests for the file's existence.
 IEND = bytes.fromhex("49454e44ae426082")
+
+# A CRS as the grid CSV writes it. karttapullautin takes the bare EPSG code (`epsg`), which is
+# what it reprojects its GeoJSON to WGS84 from.
+EPSG_RE = re.compile(r"^EPSG:(\d+)$")
 
 RENDERED_TILE_RE = re.compile(r"(\S+\.la[sz]) -> ")
 PANIC_RE = re.compile(r"panicked at|^Error|^thread ")
@@ -65,6 +71,14 @@ class Renderer:
         self.halo = [Path(r["tile"]).stem for r in rows if r["role"] == "halo"]
         if not self.core:
             sys.exit(f"run_pullauta.py: {args.csv} lists no core tiles")
+        # PLAN_GRIDS never puts two CRSs in one grid -- the lattice is per CRS -- but karttapullautin
+        # takes one `epsg` for a whole run, so a grid that broke that would be reprojected wrongly
+        # rather than fail. Better to fail.
+        crss = {r["crs"] for r in rows}
+        epsg = [m.group(1) for m in map(EPSG_RE.match, crss) if m]
+        if len(crss) != 1 or len(epsg) != 1:
+            sys.exit(f"run_pullauta.py: {args.csv} must name exactly one EPSG CRS, found {sorted(crss)}")
+        self.epsg = epsg[0]
 
         self.blacklisted: set[str] = set()
         # Provenance for the failure report. Deliberately not obtained by probing the binary: with
@@ -150,6 +164,7 @@ class Renderer:
         cp.optionxform = str
         cp.read_string("[pullauta]\n" + self.args.ini.read_text())
         cp["pullauta"]["processes"] = str(processes)
+        cp["pullauta"]["epsg"] = self.epsg
         # No section header: karttapullautin reads rust-ini's general_section().
         Path("pullauta.ini").write_text(
             "".join(f"{k} = {v}\n" for k, v in cp["pullauta"].items())
@@ -229,32 +244,33 @@ class Renderer:
         return exit_code
 
     # -- afterwards ---------------------------------------------------------
-    def prune(self) -> None:
+    def bundle_vectors(self) -> int:
         """
-        Leave out/ holding exactly the rendered tiles of the requested variant.
+        Leave out/ holding one `<stem>_vec/` directory per rendered core tile, and nothing else.
 
-        The placeholders were a means, not a result, and `<t>.png` / `<t>_depr.png` are the same map
-        with and without depression markings -- carrying both would double a full run's intermediate
-        storage (~90 GB -> ~175 GB for Bavaria) for output nobody consumes.
+        One directory per tile rather than a file per layer, so the pipeline has a single path to
+        group by parent tile. The GeoJSON is gzipped on the way in -- tippecanoe reads it compressed.
+
+        Everything else goes: the placeholders, the images -- they were only how this script and
+        karttapullautin know a tile finished, and at ~1.5 MB a tile would keep a hundred gigabytes of
+        work directories alive across Bavaria -- and whatever else pullauta dropped here.
         """
-        for stem in [*self.halo, *self.blacklisted]:
-            png = self.out / f"{stem}.png"
-            if png.exists() and png.stat().st_size == 0:
-                png.unlink()
+        rendered = 0
+        for stem in self.core:
+            layers = sorted(self.out.glob(f"{stem}_*.geojson"))
+            if stem in self.blacklisted or not layers:
+                continue
+            bundle = self.out / f"{stem}_vec"
+            bundle.mkdir(exist_ok=True)
+            for path in layers:
+                with path.open("rb") as src, gzip.open(bundle / f"{path.name}.gz", "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+            rendered += 1
 
         for path in self.out.iterdir():
-            # Deleting anything that is not a wanted render also gets rid of whatever else pullauta
-            # dropped here (<t>_basemap.dxf.bin and friends), which must not reach the publish step.
-            if path.is_file() and not self.wanted(path):
+            if path.is_file():
                 path.unlink()
-
-    def wanted(self, path: Path) -> bool:
-        if path.suffix not in (".png", ".pgw"):
-            return False
-        if self.args.variant == "both":
-            return True
-        is_depr = path.stem.endswith("_depr")
-        return is_depr if self.args.variant == "depr" else not is_depr
+        return rendered
 
     def write_failures(self) -> None:
         with self.args.failures.open("w", newline="") as fh:
@@ -288,7 +304,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ini", type=Path, default=Path("effective.ini"))
     ap.add_argument("--processes", type=int, default=1)
     ap.add_argument("--max-attempts", type=int, default=6)
-    ap.add_argument("--variant", choices=("depr", "plain", "both"), default="depr")
     ap.add_argument("--log", type=Path, default=Path("pullauta.log"))
     ap.add_argument("--failures", type=Path, default=Path("failures.tsv"))
     args = ap.parse_args(argv)
@@ -325,10 +340,9 @@ def main(argv: list[str] | None = None) -> int:
             "", tail(args.log.read_text(), 20),
         )
 
-    r.prune()
+    rendered = r.bundle_vectors()
     r.write_failures()
 
-    rendered = len(list(r.out.glob("*.pgw")))
     log(f"{args.grid_id} finished: {rendered} tile(s) rendered, "
         f"{len(r.failures)} recorded as failures")
 

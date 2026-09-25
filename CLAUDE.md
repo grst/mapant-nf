@@ -15,8 +15,8 @@ nextflow lint .                       # strict v2 parser
 tests/test_config_profiles.sh         # every profile resolves; derived config tracks its params
 shellcheck tests/*.sh tests/stub_pullauta containers/*.sh \
            containers/karttapullautin/pullauta
-.venv/bin/pytest tests/               # 41 tests: plan_grids' geometry, run_pullauta's recovery
-                                      # ladder, fetch_laz's permanent/transient verdict
+.venv/bin/pytest tests/               # plan_grids' geometry, run_pullauta's recovery ladder,
+                                      # fetch_laz's verdicts, the tiler's zoom plan, the style
 
 # One test, one case
 .venv/bin/pytest tests/test_plan_grids.py::test_tile_size_inference_uses_the_mode_not_the_mean -v
@@ -26,18 +26,18 @@ PATH="$PWD/.venv/bin:$PATH" tests/test_stub_wiring.sh
 
 # Real runs. Both are self-contained -- their inputs are in assets/ -- but download from
 # geodaten.bayern.de, so they are run by hand rather than in CI.
-nextflow run . -profile podman,test_immenstadt     # ~15 min, downloads ~5.4 GB
+nextflow run . -profile podman,test_immenstadt     # ~20 min, downloads ~5.4 GB
 tests/test_failure_injection.sh                    # ~10 min, downloads ~2.6 GB
 
 # Containers
-containers/build.sh [name ...]        # builds mapant/<name>:{version,latest}
+containers/build.sh [name ...]        # builds mapant/<name>:{tag,latest}
 containers/build.sh --manifest       # names/tags/build-args as JSON; CI's single source of truth
-containers/smoke.sh k2t              # per-image checks; also runs in CI on every build
+containers/smoke.sh tiler            # per-image checks; also runs in CI on every build
 # To run against those images, write the four withName selectors into a -c file; there is
 # deliberately no profile for them (see the Quickstart in README.md).
 
 # The README's metro map. nf-metro is a docs tool, not a test dependency, so it is not in
-# tests/requirements.txt: uv pip install --python .venv/bin/python nf-metro
+# tests/requirements.txt: uv pip install --python .venv/bin/python nf-metro==1.1.0 (2.x aborts on it)
 nf-metro validate docs/metro_map.mmd  # cheap syntax check
 # Regenerating it needs the exact flag set in the .mmd's header comment, which explains each one --
 # rendering with the defaults produces a picture that is unreadable at the README's width.
@@ -56,18 +56,57 @@ failure. Workflow files are checked with `actionlint` (also not installed; it em
 
 ## Architecture
 
-`main.nf` wires seven processes, one per file under `modules/local/<name>/main.nf`. All non-trivial
+`main.nf` wires eight processes, one per file under `modules/local/<name>/main.nf`. All non-trivial
 logic lives in `bin/` so it can be tested without Nextflow; a module body should only marshal
 parameters.
+
+**The pipeline builds one map, a PMTiles archive of vector tiles, and karttapullautin does all of
+its cartography.** It is given each grid's LiDAR *and* its OSM shapes, and with `vectorvege=1` and
+`geojson_wgs84=1` (set by `bin/render_ini.py`; `epsg` per grid by `bin/run_pullauta.py`) writes each
+tile's map as one GeoJSON per layer, in WGS84, already in its published form: contours generalised
+and broken around the knolls, cliff dashes chained into lines, vegetation traced, OSM shapes matched
+to their ISOM codes and cropped per tile. The pipeline does not open those files. That requires the
+karttapullautin branch built on @malpou's fork (`feature/vector-stack`, grst/karttapullautin#3; see
+`HANDOFF-malpou-stack.md` next to the repositories), which is what the image is built from, pinned
+to a commit. Point it back at an upstream release once that work is released.
 
 `docs/metro_map.mmd` restates that wiring by hand for the README's metro map, and **nothing checks
 that the two still agree** — adding, removing or re-plumbing a process means editing it and
 re-rendering, or the picture at the top of the README quietly starts lying. Its station ids are the
 process names on purpose, which is also what lets `nf-metro serve` light it up live.
 
-The pyramid spans `base_zoom`..`max_zoom` only. There is deliberately no overview step: below the base
-zoom the generated viewer shows OSM's own raster tiles, which avoids a reduction barrier over every
-finished tile at the end of a run.
+The map spans `base_zoom`..`max_zoom` only, in 512 px tiles (MapLibre's zooms; z15 shows as much
+per screen pixel as z16 in 256 px tiles). There is deliberately no overview step: below the base
+zoom the viewer shows OSM's own raster tiles.
+
+The style is a template, `assets/viewer/style.json`, plain MapLibre JSON that Maputnik can edit.
+`MAKE_VIEWER` (`bin/make_viewer.py`) fills in only what depends on the run -- widths in ground
+metres at the region's latitude, the colours karttapullautin took from the ini, the undergrowth
+patterns per zoom -- and draws the sprite. Nothing in it may assume Bavaria: the pipeline is meant
+for any region, which is why the latitude comes from the plan and the LiDAR credit is a parameter.
+
+`MAKE_VECTOR_TILES` hands the bundles' files to tippecanoe unaltered, one `--named-layer` per
+file, the layer being the name karttapullautin gave the file. One task per base-zoom parent, each
+writing its own `.pmtiles`, `groupKey` fan-in, `remainder: true`. `MERGE_PMTILES` joins them with
+`tile-join`: the one step that waits for the whole run, and unavoidably so -- an archive has one
+directory -- but it stages a few hundred archives, never the tiles. Three things are load-bearing:
+
+- **Nothing may be left out to fit a budget.** Every one of tippecanoe's thinning options
+  (`--drop-densest-as-needed` and the rest) decides per tile, from whatever happens to be in it, so
+  two parents cutting the same zoom disagree about what the map contains. That is visible as content
+  appearing and disappearing along the line where two parents meet -- a lake on an overview tile in
+  one and not the other -- and it also truncated the *deepest* zoom, which is the one the OCD export
+  in mapant-bayern reads. They are all off (`--no-tile-size-limit`, `--no-feature-limit`,
+  `--drop-rate=1`); what each zoom shows is the zoom plan in `make_vector_tiles.py`, passed as a
+  `--feature-filter` on each feature's own `isom` and `$zoom`, so it depends on the feature alone.
+- **Two shades of green share their boundary vertex for vertex**, because karttapullautin traces them
+  from one grid. `--detect-shared-borders` and `--no-simplification-of-shared-nodes` keep tippecanoe
+  from simplifying that boundary twice, which would leave a sliver of white paper between them.
+- **`--clip-bounding-box` clips geometry but still writes tiles outside the parent** when their
+  buffer reaches in. They hold this parent's side of the border, and the neighbour's copy of the
+  same tile holds the other side; `tile-join` merges the layers of a tile present in several
+  inputs, so the merged tile has both. Do not prune them: that loses the buffer across every parent
+  border. `--no-tile-size-limit` on `tile-join` matters for the same reason as on tippecanoe.
 
 The scale is what shapes everything: 15+ TB of input, ~72,000 tiles, ~3,000 CPU-hours. Nothing may be
 downloaded up front and no intermediate may outlive the task that made it.
@@ -99,9 +138,12 @@ index, lon/lat envelopes via `transform_bounds(densify_pts=21)`, and the tile→
 with each parent's core-tile count. The halo pool is deliberately the **whole** CSV, not the filtered
 selection, so a `--region_bbox` run renders identically to a full one.
 
-Per-grid OSM extraction is a feasibility requirement, not an optimisation: karttapullautin unzips its
-shapefile archive per invocation and re-lists it per tile, so a country-wide archive would be
-unpacked once per grid and scanned a hundred times.
+OSM extraction is per grid: each `PULLAUTA_GRID` task stages its own grid's archive into
+karttapullautin's input folder as `map.shp.zip`, and the country-wide archive is never staged
+anywhere. A grid with nothing drawable carries a `<grid>.NONE` sentinel instead, which is staged as
+nothing -- only a `.shp.zip` is copied, because karttapullautin would try to unzip anything else.
+Neighbouring extracts overlap by `osm_buffer_m`, which no longer matters: karttapullautin crops the
+shapes per tile, so each piece of a road is written by exactly one tile.
 
 ## Traps that have already cost time
 
@@ -121,11 +163,6 @@ unpacked once per grid and scanned a hundred times.
 - **No `$projectDir` inside a process body**: on an executor without a shared filesystem that path
   does not exist. Stage the file as an input instead. The same rule rules out bind mounts and any
   host-absolute path in committed config.
-- **The end-of-run `Outputs:` listing prints each channel item in full**, capping the *number of
-  items* (ten, once there are more than twenty) but not their size. A published item that is a list
-  of a task's files therefore prints every one of them: `MAKE_TILES.out.tiles` is a whole z11..z18
-  subtree, ~22,000 paths per task. `main.nf` flattens the tiles channel before publishing so the cap
-  applies per file; it is not a no-op, and removing it puts megabytes of tile names on the console.
 - **Never assert on Nextflow's console output.** The end-of-run summary is written by whichever log
   observer is active: ANSI in a terminal, plain in CI, and a third `[SUCCESS] completed=… cached=…`
   format when `NXF_AGENT_MODE`, `AGENT` or `CLAUDECODE` is set — which is why a test can be green in
@@ -136,8 +173,9 @@ unpacked once per grid and scanned a hundred times.
   Use `"${var}:tag"` — this has produced a mis-tagged image and a broken `git rev-parse` already.
 - **podman never re-pulls a tag it already has**, and three of the four images are referenced as
   `:latest`. A working tree newer than the local image cache therefore runs against whatever was
-  pulled weeks ago: the k2t 0.2.0 bump against a cached 0.1.3 fails as `Unknown option: --format` in
-  `MAKE_TILES`, minutes into a run, with nothing pointing at the image. `podman pull` the four images
+  pulled weeks ago: a bumped image against a stale cache fails minutes into a run with an error --
+  a missing `tippecanoe`, an option the old version did not have -- that points at anything but the
+  image. `podman pull` the four images
   before trusting a red end-to-end run — a fresh machine, having no cache, is unaffected.
 
 ## Containers
@@ -148,7 +186,7 @@ Four images, one per process family, chosen per process by `withName` selectors 
 only UID that exists, so apt needs `-o APT::Sandbox::User=root`. `containers/build.sh` explains both
 constraints in full; a `USER nonroot` directive produces an image that cannot start.
 
-`karttapullautin` compiles the pinned upstream tag three times (`x86-64`, `-v3`, `-v4`) with an
+`karttapullautin` compiles the pinned commit three times (`x86-64`, `-v3`, `-v4`) with an
 explicit `--target x86_64-unknown-linux-gnu`, so `RUSTFLAGS` reaches only target artifacts and the v4
 pass does not SIGILL while running its own build script on an AVX2 machine. A wrapper dispatches on
 `/proc/cpuinfo` per invocation; `PULLAUTA_ISA` overrides it, which is what makes byte comparisons

@@ -1,9 +1,13 @@
 # karttapullautin, built three times for three instruction-set levels.
 #
-# Why build from source at all: the upstream release assets are only
-# karttapullautin-<arch>-<os>.tar.gz -- there is no AVX-512 variant. prompt.md requires that a
-# machine which supports AVX-512 actually gets an AVX-512 build, so the binaries have to be
-# compiled here with an explicit -C target-cpu.
+# Why build from source at all: the vector output this pipeline reads (per-tile GeoJSON in WGS84)
+# is not in an upstream release yet. It is built from the fork's branch behind
+# grst/karttapullautin#3, pinned to a commit. Once that work is released upstream, point
+# PULLAUTA_REPO back at karttapullautin/karttapullautin and PULLAUTA_REF at the release tag.
+#
+# Building from source is also what gets an AVX-512 build at all: the release assets have no such
+# variant, and prompt.md requires that a machine which supports AVX-512 gets one, so the binaries
+# are compiled here with an explicit -C target-cpu.
 #
 # Why `--target x86_64-unknown-linux-gnu` on every cargo invocation, and not just RUSTFLAGS:
 # without --target, cargo applies RUSTFLAGS to *host* artifacts too -- build scripts and proc
@@ -16,16 +20,21 @@
 # Runtime deps look unrelated to rendering, and are not: download, checksum verification, rendering
 # and cleanup all happen inside a *single* process, so curl and the Python that drives bin/*.py have
 # to live in this image alongside pullauta.
-FROM docker.io/library/rust:1.88-bookworm AS build
+FROM docker.io/library/rust:1.97-bookworm AS build
 
-ARG PULLAUTA_REPO=https://github.com/karttapullautin/karttapullautin
-ARG PULLAUTA_TAG=v2.13.0
+ARG PULLAUTA_REPO=https://github.com/grst/karttapullautin
+# A commit rather than a branch, so the same build context always builds the same renderer. It
+# is also the image's tag (see containers/build.sh), so bumping it publishes a new image.
+ARG PULLAUTA_REF=c2a060fc4497eac3c5cd3c728b2039e392b266d7
 ARG CARGO_TARGET=x86_64-unknown-linux-gnu
 
 WORKDIR /src
-RUN git clone --depth 1 --branch "${PULLAUTA_TAG}" "${PULLAUTA_REPO}" . \
+# fetch rather than `clone --branch`, which takes a branch or a tag but not a commit.
+RUN git init -q . \
+ && git fetch --depth 1 "${PULLAUTA_REPO}" "${PULLAUTA_REF}" \
+ && git checkout -q FETCH_HEAD \
  && git rev-parse HEAD > /src/GIT_SHA \
- # rust-toolchain.toml pins channel "1.88" plus rustfmt/clippy. The image already *is* 1.88, but
+ # rust-toolchain.toml pins channel "1.97" plus rustfmt/clippy. The image already *is* 1.97, but
  # rustup would try to resolve and download that channel name as a separate toolchain. Nothing in
  # a release build needs it.
  && rm -f rust-toolchain.toml

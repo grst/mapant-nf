@@ -3,8 +3,8 @@
 #
 # Run by CI on every image it builds, and usable by hand against a local build:
 #
-#   containers/smoke.sh k2t                                   # localhost/mapant/k2t:latest
-#   containers/smoke.sh karttapullautin ghcr.io/grst/mapant-nf/karttapullautin:2.13.0
+#   containers/smoke.sh tiler                                 # localhost/mapant/tiler:latest
+#   containers/smoke.sh karttapullautin ghcr.io/grst/mapant-nf/karttapullautin:c2a060f
 #
 # These are not unit tests for the tools; they are checks for the handful of things that have gone
 # wrong here before, each of which produced a failure that named something other than its cause:
@@ -104,9 +104,11 @@ case "$NAME" in
         fi
 
         # Written by the build from the source checkout, and quoted in every failure report so the
-        # karttapullautin developers know exactly which commit produced the panic.
-        check 'the upstream commit is recorded' \
-            run bash -c 'grep -Eq "^[0-9a-f]{40}$" /opt/karttapullautin/GIT_SHA'
+        # karttapullautin developers know exactly which commit produced the panic. It has to be the
+        # one the Containerfile pins.
+        want="$(sed -n 's/^ARG PULLAUTA_REF=//p' "$(dirname -- "${BASH_SOURCE[0]}")/karttapullautin/Containerfile")"
+        check "the pinned commit ${want:0:7} is recorded" \
+            run bash -c "grep -qx '${want}' /opt/karttapullautin/GIT_SHA"
         ;;
 
     gdal)
@@ -123,18 +125,22 @@ case "$NAME" in
         check 'osmium extract is available' run osmium extract --help
         ;;
 
-    k2t)
-        check 'k2t runs' run k2t --help
-        check 'make-tiles is available' run k2t make-tiles --help
-        # rasterio's wheel links libexpat but does not vendor it, and python:slim does not have it.
-        # Importing is the only way to find out; pip install reports success either way. This image is
-        # also the generic Python image, so these are what bin/*.py needs too.
-        check 'the geo stack imports' \
-            run python -c 'import karttapullautin2tiles, geopandas, shapely, pyproj, mercantile, rasterio, PIL'
-        # The pyramid is lossless WebP, which Pillow can only write if its wheel bundled libwebp --
-        # another capability pip reports nothing about. Without it every MAKE_TILES task dies.
-        check 'Pillow can write WebP' \
-            run python -c 'from PIL import features; assert features.check("webp")'
+    tiler)
+        check 'tippecanoe runs' run tippecanoe --version
+        # The flags MAKE_VECTOR_TILES and MERGE_PMTILES use, end to end: an option this tippecanoe
+        # does not have fails every tiling task minutes into a run.
+        check 'tippecanoe writes PMTiles and tile-join merges them' run bash -c '
+            set -e; cd /tmp
+            echo "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Point\",\"coordinates\":[10.2,47.5]}}" > p.json
+            tippecanoe --force --output=a.pmtiles --maximum-zoom=10 --no-tile-size-limit --no-feature-limit \
+                --drop-rate=1 --detect-shared-borders --no-simplification-of-shared-nodes \
+                --no-tile-stats --no-progress-indicator --named-layer=p:p.json 2> /dev/null
+            tile-join --force --no-tile-size-limit --no-tile-stats --name t --attribution a \
+                --output=b.pmtiles a.pmtiles a.pmtiles 2> /dev/null
+            head -c 7 b.pmtiles | grep -q PMTiles'
+        # What bin/*.py imports: pyproj for plan_grids.py, mercantile for the tile arithmetic, and
+        # Pillow for the sprite make_viewer.py draws.
+        check 'the python imports' run python -c 'import pyproj, mercantile, PIL'
         ;;
 
     *)

@@ -195,11 +195,11 @@
                 },
                 "max_zoom": {
                     "type": "integer",
-                    "default": 18,
+                    "default": 16,
                     "minimum": 0,
                     "maximum": 22,
                     "description": "Deepest zoom level to generate.",
-                    "help_text": "z18 is about 0.4 m/px at central-European latitudes, which matches karttapullautin's 0.4233 m/px output. Each extra level quadruples the file count: ~8.8 M tiles for Bavaria at z18 against ~2.2 M at z17."
+                    "help_text": "The zoom the map is cut at full detail; the layer table in make_vector_tiles.py brings detail in counting down from it (e.g. undergrowth from max_zoom-2). Vector tiles stay sharp when the viewer overzooms them, so z16 is enough for the full 0.42 m/px LiDAR detail. Each extra level quadruples the file count and pushes every detail one zoom deeper."
                 }
             }
         }

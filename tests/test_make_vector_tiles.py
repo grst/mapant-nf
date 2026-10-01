@@ -1,14 +1,17 @@
 """
 Test bin/make_vector_tiles.py.
 
-The tiler does not touch the data -- karttapullautin's per-tile GeoJSON goes to tippecanoe as it
-is -- so what is left to get wrong is what it tells tippecanoe: which file is which layer and what
-each zoom may show. Both produce a plausible-looking map rather than an error when they are wrong:
-a layer missing, or a zoom whose contents depend on which parent cut it.
+The tiler sorts karttapullautin's features into isom-maplibre's tables, gives each its ISOM 2017-2
+`isom_code` and decides the zooms it is drawn at. Every one of those produces a plausible-looking
+map rather than an error when it is wrong: a symbol the style never draws because it is in the
+wrong table or spelt `"403"` instead of `"403.000"`, or a zoom whose contents depend on which
+parent cut it.
 """
 
 from __future__ import annotations
 
+import csv
+import gzip
 import importlib.util
 import json
 import shutil
@@ -25,130 +28,193 @@ mvt = importlib.util.module_from_spec(spec)
 sys.modules["mvt"] = mvt
 spec.loader.exec_module(mvt)
 
-PARENT = mercantile.Tile(x=4329, y=2862, z=13)
+CROSSWALK = mvt.read_crosswalk(REPO / "assets" / "isom2000-isom2017-2.crt")
+LAYER = {layer.name: layer for layer in mvt.LAYERS}
 
 
-def shown(expression: list | None, zoom: int, properties: dict) -> bool:
-    """Evaluate the subset of tippecanoe's feature-filter language the tiler writes."""
-    if expression is None:
-        return True
-    op, *args = expression
-    if op == "any":
-        return any(shown(a, zoom, properties) for a in args)
-    if op == "all":
-        return all(shown(a, zoom, properties) for a in args)
-    if op == ">=":
-        assert args[0] == "$zoom"
-        return zoom >= args[1]
-    if op in ("in", "!in"):
-        found = properties.get(args[0]) in args[1:]
-        return found if op == "in" else not found
-    raise AssertionError(f"unexpected operator {op}")
+def feature(isom: str, geometry_type: str = "LineString", **properties) -> dict:
+    coordinates = {"Point": [10.25, 47.56], "LineString": [[10.25, 47.56], [10.26, 47.57]],
+                   "Polygon": [[[10.25, 47.56], [10.26, 47.56], [10.26, 47.57], [10.25, 47.56]]]}
+    return {"type": "Feature", "properties": {"isom": isom, **properties},
+            "geometry": {"type": geometry_type, "coordinates": coordinates[geometry_type]}}
 
 
-def minzoom(layer: str, **properties) -> int:
-    """The first zoom of a z13-16 pyramid that draws such a feature."""
-    plan = mvt.ZoomPlan(base=13, max=16)
-    (spec,) = [l for l in mvt.LAYERS if l.name == layer]
-    expression = plan.feature_filter(spec)
-    return next(z for z in range(13, 17) if shown(expression, z, properties))
+def classify(layer: str, isom: str, geometry_type: str = "LineString") -> tuple[str, str]:
+    return mvt.Classifier(CROSSWALK).classify(LAYER[layer], feature(isom, geometry_type))
 
 
-def write_bundle(root: Path, stem: str, layers: dict[str, bytes]) -> Path:
+def write_bundle(root: Path, stem: str, layers: dict[str, list[dict] | bytes]) -> Path:
     bundle = root / f"{stem}_vec"
     bundle.mkdir(parents=True)
     for layer, content in layers.items():
+        if isinstance(content, list):
+            content = gzip.compress(json.dumps({"type": "FeatureCollection", "features": content}).encode())
         (bundle / f"{stem}_{layer}.geojson.gz").write_bytes(content)
     return bundle
 
 
-def test_every_file_goes_to_the_layer_its_name_says_in_drawing_order(tmp_path):
-    """
-    The layer order is the compositing order, so the vegetation must come before the contours
-    whatever order the bundles list their files in; and an empty file -- the stub's placeholder --
-    is not handed to tippecanoe, which cannot parse it.
-    """
-    write_bundle(tmp_path, "b", {"osm_lines": b"x", "contours": b"x", "vegetation": b"x"})
-    write_bundle(tmp_path, "a", {"contours": b"x", "cliffs": b""})
+def write_parent_tiles(path: Path, tiles: dict[str, tuple[float, float, float, float]]) -> Path:
+    with path.open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["tile", "parent", "z", "x", "y", "crs", "n_core", "min_x", "min_y", "max_x", "max_y"])
+        for stem, box in tiles.items():
+            w.writerow([stem, "13_4329_2862", 13, 4329, 2862, "EPSG:25832", len(tiles), *box])
+    return path
 
-    files = mvt.layer_files(tmp_path)
 
-    assert [(layer, path.name) for layer, path in files] == [
-        ("vegetation", "b_vegetation.geojson.gz"),
-        ("contours", "a_contours.geojson.gz"),
-        ("contours", "b_contours.geojson.gz"),
-        ("osm_lines", "b_osm_lines.geojson.gz"),
-    ]
+def test_the_terrain_keeps_its_number_in_the_style_spelling_and_its_table():
+    assert classify("vegetation", "406", "Polygon") == ("vegetation_areas", "406.000")
+    assert classify("yellow", "403", "Polygon") == ("vegetation_areas", "403.000")
+    assert classify("undergrowth", "409", "Polygon") == ("vegetation_areas", "409.000")
+    assert classify("contours", "102") == ("contours", "102.000")
+    assert classify("formlines", "103") == ("contours", "103.000")
+    assert classify("dotknolls", "111", "Point") == ("knolls_points", "111.000")
+    assert classify("cliffs", "201") == ("cliffs", "201.000")
+
+
+def test_the_osm_shapes_are_translated_from_iso_2000_by_the_crosswalk():
+    """The pairs the webapp's bridge used to translate at load time (HANDOFF-isom-maplibre.md)."""
+    assert classify("osm_areas", "301", "Polygon") == ("water", "301.000")
+    assert classify("osm_lines", "301.1") == ("water", "301.000")  # the bank, as a line
+    assert classify("osm_lines", "306") == ("water", "305.000")
+    assert classify("osm_areas", "310", "Polygon") == ("water", "308.000")
+    assert classify("osm_areas", "401", "Polygon") == ("vegetation_areas", "401.000")
+    assert classify("osm_lines", "401.1") == ("vegetation_areas", "415.000")
+    assert classify("osm_lines", "414") == ("vegetation_areas", "415.000")
+    assert classify("osm_lines", "503") == ("paths", "502.000")
+    assert classify("osm_lines", "503T") == ("paths", "502.000")  # a bridge is the road
+    assert classify("osm_lines", "504") == ("paths", "503.000")
+    assert classify("osm_lines", "505") == ("paths", "504.000")
+    assert classify("osm_lines", "507") == ("paths", "506.000")
+    assert classify("osm_lines", "515") == ("manmade", "509.000")
+    assert classify("osm_lines", "516") == ("manmade", "510.000")
+    assert classify("osm_lines", "524") == ("manmade", "518.000")
+    assert classify("osm_areas", "526", "Polygon") == ("manmade", "521.000")
+    assert classify("osm_areas", "527", "Polygon") == ("manmade", "520.000")
+    assert classify("osm_areas", "529", "Polygon") == ("manmade", "501.000")
+
+
+def test_any_code_a_rules_file_may_use_is_translated_not_only_mapant_s():
+    """The crosswalk is keyed on ISOM 2000, so a region with rules of its own still maps."""
+    assert classify("osm_lines", "517") == ("manmade", "511.000")  # major power line
+    assert classify("osm_areas", "302", "Polygon") == ("water", "301.000")  # a pond is a lake now
+
+
+def test_a_code_nobody_translated_keeps_its_number_and_is_reported():
+    classifier = mvt.Classifier(CROSSWALK)
+    assert classifier.classify(LAYER["osm_lines"], feature("777")) == ("manmade", "777.000")
+    assert classifier.unknown == {"777": 1}
 
 
 def test_what_a_zoom_shows_is_a_property_of_the_feature():
     """
-    The zoom a feature first appears at depends on its own `isom` alone, never on what else is
-    in the tile -- which is what keeps two parents that cut the same zoom in agreement.
+    The zoom a feature first appears at depends on its own `isom` and table alone, never on what
+    else is in the tile -- which is what keeps two parents that cut the same zoom in agreement.
     """
-    assert minzoom("contours", isom="102") == 13  # index contours carry the shape of the ground
-    assert minzoom("contours", isom="101") == 15
-    assert minzoom("vegetation", isom="410") == 13
-    assert minzoom("formlines", isom="103") == 16
-    assert minzoom("dotknolls", isom="109") == 16
-    assert minzoom("osm_lines", isom="503") == 13  # the road network is how you find yourself
-    assert minzoom("osm_lines", isom="503T") == 13  # and a bridge is part of the road
-    assert minzoom("osm_areas", isom="526") == 15  # a building is not, at a kilometre a tile
-    assert minzoom("osm_lines", isom="999") == 15  # a code the table has never heard of
+    plan = mvt.ZoomPlan(base=13, max=15)
+
+    def minzoom(layer: str, isom: str, geometry_type: str = "LineString") -> int:
+        table, _ = classify(layer, isom, geometry_type)
+        return plan.minzoom(LAYER[layer].levels_of(isom), table)
+
+    assert plan.overview == 12
+    assert minzoom("vegetation", "410", "Polygon") == 12
+    assert minzoom("osm_lines", "503") == 12  # the road network is how you find yourself
+    assert minzoom("osm_lines", "503T") == 12  # and a bridge is part of the road
+    assert minzoom("osm_areas", "526", "Polygon") == 14  # a building is not, at a kilometre a tile
+    assert minzoom("osm_lines", "999") == 14  # a code the table has never heard of
+    assert minzoom("formlines", "103") == 15
+    assert minzoom("dotknolls", "109", "Point") == 15
+    assert minzoom("contours", "101") == 14
 
 
-def test_a_layer_drawn_at_every_zoom_needs_no_filter():
-    plan = mvt.ZoomPlan(base=13, max=16)
-    (vegetation,) = [l for l in mvt.LAYERS if l.name == "vegetation"]
-    assert plan.feature_filter(vegetation) is None
-    # and a pyramid of one zoom filters nothing at all
-    single = mvt.ZoomPlan(base=16, max=16)
-    assert all(single.feature_filter(layer) is None for layer in mvt.LAYERS)
+def test_the_overview_level_has_no_contour_lines():
+    plan = mvt.ZoomPlan(base=13, max=15)
+    # index contours are on every zoom of the pyramid -- except the overview
+    assert plan.minzoom(mvt.ALL_ZOOMS, "contours") == 13
+    assert plan.minzoom(mvt.ALL_ZOOMS, "water") == 12
 
 
-def test_tippecanoe_gets_the_files_as_they_are_and_decides_nothing_by_size(tmp_path):
+def test_style_codes():
+    assert mvt.style_code("403") == "403.000"
+    assert mvt.style_code("101.1") == "101.001"
+    assert mvt.style_code("521.1") == "521.001"
+    assert mvt.style_code("301.4") == "301.000"
+    assert mvt.style_code("weird") == "weird"
+
+
+def test_every_feature_gets_its_table_code_and_minzoom_and_the_coverage_its_tiles(tmp_path):
+    write_bundle(tmp_path / "in", "593_5269", {
+        "vegetation": [feature("406", "Polygon", layer="406")],
+        "contours": [feature("101", layer="contour", elevation=700.0)],
+        "osm_lines": [feature("503", layer="503", category="road-path")],
+        "cliffs": b"",  # the stub's placeholder
+    })
+    parent_tiles = write_parent_tiles(tmp_path / "p.csv", {
+        "593_5269": (593000, 5269000, 594000, 5270000),
+        "594_5269": (594000, 5269000, 595000, 5270000),  # not rendered here: not covered
+    })
+    files = mvt.bundle_files(tmp_path / "in")
+    assert [(stem, layer.name) for stem, layer, _ in files] == [
+        ("593_5269", "vegetation"), ("593_5269", "contours"), ("593_5269", "osm_lines")]
+
+    tables = mvt.write_tables(files, mvt.footprints(parent_tiles, {"593_5269"}),
+                              mvt.ZoomPlan(13, 15), mvt.Classifier(CROSSWALK), tmp_path / "t")
+    assert [(t, n) for t, _, n in tables] == [
+        ("coverage", 1), ("vegetation_areas", 1), ("contours", 1), ("paths", 1)]
+    read = {t: [json.loads(line) for line in path.read_text().splitlines()] for t, path, _ in tables}
+    (road,) = read["paths"]
+    assert road["properties"] == {"isom": "503", "layer": "503", "category": "road-path",
+                                  "isom_code": "502.000"}
+    assert road["tippecanoe"] == {"minzoom": 12}
+    assert read["contours"][0]["tippecanoe"] == {"minzoom": 14}
+    (paper,) = read["coverage"]
+    assert paper["properties"] == {"tile": "593_5269"} and paper["tippecanoe"] == {"minzoom": 12}
+
+
+def test_neighbouring_footprints_share_their_edge_point_for_point(tmp_path):
+    """Two squares that meet must leave no hairline of background between them."""
+    parent_tiles = write_parent_tiles(tmp_path / "p.csv", {
+        "593_5269": (593000, 5269000, 594000, 5270000),
+        "594_5269": (594000, 5269000, 595000, 5270000),
+    })
+    west, east = mvt.footprints(parent_tiles, {"593_5269", "594_5269"})
+    west_ring = {tuple(p) for p in west["geometry"]["coordinates"][0]}
+    east_ring = {tuple(p) for p in east["geometry"]["coordinates"][0]}
+    shared = west_ring & east_ring
+    assert len(shared) == 21  # one edge, densified to 20 segments
+
+
+def test_tippecanoe_decides_nothing_by_size_and_cuts_512_px_tiles(tmp_path):
     """
     Every one of tippecanoe's size-driven decisions is made per tile from what happens to be in
-    it, which is exactly the dependency the zoom plan exists to remove. And the files are named on
-    the command line, untouched: there is no intermediate copy to diverge from what
-    karttapullautin wrote.
+    it, which is exactly the dependency the per-feature zooms exist to remove.
     """
-    contours = write_bundle(tmp_path, "a", {"contours": b"x"}) / "a_contours.geojson.gz"
+    parent = mercantile.Tile(x=4329, y=2862, z=13)
+    tables = [("contours", tmp_path / "contours.geojsonl", 1), ("paths", tmp_path / "paths.geojsonl", 1)]
+    command = mvt.tippecanoe_command(tables, tmp_path / "out.pmtiles", parent, 15, 4)
 
-    command = mvt.tippecanoe_command(
-        mvt.layer_files(tmp_path), tmp_path / "out.pmtiles", PARENT, 16, 8
-    )
-
-    assert f"--named-layer=contours:{contours}" in command
+    assert f"--named-layer=contours:{tmp_path / 'contours.geojsonl'}" in command
+    assert "--minimum-zoom=12" in command and "--maximum-zoom=15" in command
+    assert "--full-detail=13" in command and "--low-detail=13" in command
     assert "--no-tile-size-limit" in command
     assert "--no-feature-limit" in command
     assert "--drop-rate=1" in command
     assert not [flag for flag in command if "drop-densest" in flag or "as-needed" in flag]
     assert "--detect-shared-borders" in command
-    (filters,) = [f for f in command if f.startswith("--feature-filter=")]
-    assert set(json.loads(filters.split("=", 1)[1])) == {
-        layer.name for layer in mvt.LAYERS
-        if mvt.ZoomPlan(base=13, max=16).feature_filter(layer) is not None
-    }
 
 
 @pytest.mark.skipif(shutil.which("tippecanoe") is None, reason="needs tippecanoe")
 def test_tippecanoe_accepts_the_command(tmp_path):
-    """The feature filter and the flags, against the real thing: a typo here is a failed task."""
-    import gzip
-
-    collection = {
-        "type": "FeatureCollection",
-        "features": [
-            {"type": "Feature", "properties": {"layer": "contour_index", "isom": "102",
-                                                "elevation": 700.0},
-             "geometry": {"type": "LineString",
-                          "coordinates": [[10.245, 47.55], [10.275, 47.57]]}},
-        ],
-    }
-    write_bundle(tmp_path / "in", "a", {"contours": gzip.compress(json.dumps(collection).encode())})
-
+    """The flags and the per-feature zooms, against the real thing: a typo here is a failed task."""
+    write_bundle(tmp_path / "in", "593_5269", {
+        "contours": [feature("102", layer="contour_index", elevation=700.0)],
+        "osm_areas": [feature("301", "Polygon", layer="301", category="lake")],
+    })
+    parent_tiles = write_parent_tiles(tmp_path / "p.csv", {"593_5269": (593000, 5269000, 594000, 5270000)})
     archive = tmp_path / "13-4329-2862.pmtiles"
     assert mvt.main(["--parent", "13", "4329", "2862", "--max-zoom", "14",
+                     "--crosswalk", str(REPO / "assets" / "isom2000-isom2017-2.crt"),
+                     "--parent-tiles", str(parent_tiles), "--work-dir", str(tmp_path / "t"),
                      str(tmp_path / "in"), str(archive)]) == 0
     assert archive.read_bytes()[:7] == b"PMTiles"

@@ -6,12 +6,16 @@
 //
 // Per grid rather than once for the region: each PULLAUTA_GRID task stages only its own grid's
 // archive, and a Bavaria-wide archive is never staged anywhere.
+//
+// The columns are the keys the rules file tests (bin/osmconf.py): ogr2ogr's default set has no
+// `power` on lines, for one, and a rule on a key that is not a column matches nothing.
 process OSM_TO_SHAPES {
     tag "${grid_id}"
     label 'process_low'
 
     input:
     tuple val(grid_id), path(grid_pbf), val(crs)
+    path rules, stageAs: 'rules/*'
 
     output:
     tuple val(grid_id), path('shapes/*'), emit: shapes
@@ -20,6 +24,12 @@ process OSM_TO_SHAPES {
     """
     mkdir -p shapes
 
+    osmconf.py \\
+        --rules ${rules} \\
+        --template "\$(python3 -c "from osgeo import gdal; print(gdal.FindFile('gdal', 'osmconf.ini'))")" \\
+        --out osmconf.ini
+
+    #   OSM_CONFIG_FILE             -- the columns, see above
     #   OSM_USE_CUSTOM_INDEXING NO  -- the custom index needs scratch proportional to the input and
     #                                  buys nothing on an extract this small
     #   -skipfailures               -- OSM is full of geometries that cannot be expressed as a
@@ -27,6 +37,7 @@ process OSM_TO_SHAPES {
     #   -t_srs                      -- karttapullautin draws the shapes in the grid's own CRS,
     #                                  and reprojects them to WGS84 with everything else
     ogr2ogr \\
+        --config OSM_CONFIG_FILE osmconf.ini \\
         --config OSM_USE_CUSTOM_INDEXING NO \\
         -skipfailures \\
         -f 'ESRI Shapefile' \\

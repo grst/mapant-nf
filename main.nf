@@ -2,13 +2,14 @@
 /*
  * mapant -- generate a web-mercator vector map (PMTiles) from a list of LiDAR tiles.
  *
- * Give it a CSV of laz tiles (url, checksum, bbox, CRS), an OSM extract and a karttapullautin
- * configuration, and it produces the map as one PMTiles archive of vector tiles, with the style
- * that draws them. Nothing here is specific to Bavaria; the input contract is assets/schema_tiles.json.
+ * Give it a CSV of laz tiles (url, checksum, bbox, CRS, optionally the karttapullautin ini each is
+ * rendered with), an OSM extract and a default karttapullautin configuration, and it produces the
+ * map as one PMTiles archive of vector tiles, with the style that draws them. Nothing here is
+ * specific to Bavaria; the input contract is assets/schema_tiles.json.
  *
  * karttapullautin does all the cartography: given a grid's LiDAR and its OSM shapes, it writes each
- * tile's map as per-layer GeoJSON in WGS84, already in its published form. MAKE_VECTOR_TILES hands
- * those files to tippecanoe untouched and cuts one parent's archive; MERGE_PMTILES joins them.
+ * tile's map as per-layer GeoJSON in WGS84, already in its published form. MAKE_VECTOR_TILES sorts
+ * them into isom-maplibre's tables and cuts one parent's archive; MERGE_PMTILES joins them.
  *
  * See README.md for the design, and each run's published plan_summary.txt for its own numbers.
  */
@@ -43,12 +44,28 @@ workflow {
     // ---------------------------------------------------------------------
     PLAN_GRIDS(channel.fromPath(params.tiles_csv, checkIfExists: true))
 
-    // .first() makes this a value channel. Without it, a one-item queue channel would pair with
-    // exactly one grid and silently starve every other grid of its ini -- the classic Nextflow trap.
-    ch_ini = RENDER_INI(
-        channel.fromPath(params.pullauta_ini, checkIfExists: true),
+    // One configuration per distinct ini the plan names: the samplesheet's `pullauta_ini` where a
+    // tile has one, --pullauta_ini where it does not. A relative path is resolved against the
+    // launch directory, as every other path the pipeline is given.
+    ch_inis = RENDER_INI(
+        PLAN_GRIDS.out.ini_index
+            .splitCsv(header: true)
+            .map { row -> tuple(row.ini_id, file(row.path, checkIfExists: true)) },
         params.pullauta_processes
-    ).ini.first()
+    ).ini
+
+    // Each grid with the ini of its configuration.
+    ch_grid_ini = PLAN_GRIDS.out.grid_index
+        .splitCsv(header: true)
+        .map { row -> tuple(row.ini_id, row.grid_id) }
+        .combine(ch_inis, by: 0)
+        .map { _ini_id, grid_id, ini -> tuple(grid_id, ini) }
+
+    // The style takes the map's colours from an ini. Every configuration of a run is meant to look
+    // the same, so it is the first by name -- a choice that does not depend on which finished first.
+    ch_style_ini = ch_inis
+        .toSortedList { a, b -> a[0] <=> b[0] }
+        .map { inis -> inis[0][1] }
 
     ch_grid_csv = PLAN_GRIDS.out.grid_csvs
         .flatten()
@@ -73,11 +90,14 @@ workflow {
             .first()
     )
 
+    ch_vectorconf = file(params.vectorconf ?: "${projectDir}/assets/NONE", checkIfExists: true)
+
     OSM_TO_SHAPES(
         OSM_EXTRACT.out.pbf
             .flatten()
             .map { pbf -> tuple(pbf.baseName, pbf) }
-            .join(ch_grid_crs)
+            .join(ch_grid_crs),
+        ch_vectorconf
     )
 
     // A grid with no shapes -- no pbf at all, or an extract with nothing drawable in it -- carries
@@ -88,14 +108,14 @@ workflow {
         .map { grid_id, csv, shapes ->
             tuple(grid_id, csv, shapes ?: file("${projectDir}/assets/NONE"))
         }
+        .join(ch_grid_ini)
 
     // ---------------------------------------------------------------------
     // Render
     // ---------------------------------------------------------------------
     PULLAUTA_GRID(
         ch_grid_shapes,
-        ch_ini,
-        file(params.vectorconf ?: "${projectDir}/assets/NONE")
+        ch_vectorconf
     )
 
     // One item per rendered tile, keyed by its name for the join to its parent.
@@ -128,7 +148,12 @@ workflow {
         .groupTuple(remainder: true)
         .map { key, bundles -> tuple(key.getGroupTarget(), bundles) }
 
-    MAKE_VECTOR_TILES(ch_parent_vec)
+    MAKE_VECTOR_TILES(
+        ch_parent_vec,
+        file("${projectDir}/assets/isom2000-isom2017-2.crt", checkIfExists: true),
+        // .first(): a one-item queue channel would pair with exactly one parent.
+        PLAN_GRIDS.out.parent_index.first()
+    )
 
     // Written into the archive and into the style, so whatever shows the map shows the credits.
     def attribution = [
@@ -137,11 +162,11 @@ workflow {
         '<a href="https://github.com/karttapullautin/karttapullautin">karttapullautin</a>'
     ].findAll { credit -> credit }.join(', ')
 
-    MERGE_PMTILES(MAKE_VECTOR_TILES.out.pmtiles.collect(), attribution)
+    MERGE_PMTILES(MAKE_VECTOR_TILES.out.pmtiles.collect(), PLAN_GRIDS.out.parent_index, attribution)
 
     MAKE_VIEWER(
         PLAN_GRIDS.out.parent_index,
-        ch_ini,
+        ch_style_ini,
         channel.fromPath("${projectDir}/assets/viewer/*").collect(),
         attribution
     )
@@ -186,8 +211,9 @@ workflow {
     qc = ch_render_failures.mix(ch_download_failures, PULLAUTA_GRID.out.log)
     plan = PLAN_GRIDS.out.summary.mix(
         PLAN_GRIDS.out.grid_index,
+        PLAN_GRIDS.out.ini_index,
         PLAN_GRIDS.out.parent_index,
-        ch_ini
+        ch_inis.map { _ini_id, ini -> ini }
     )
 }
 

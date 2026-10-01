@@ -22,8 +22,9 @@ readonly WORK="${SCRATCH}/work"
 
 # From conf/test_stub.config. Kept here as literals rather than parsed out of the config so that a
 # change to the profile shows up as a failing assertion instead of silently weakening the test.
-readonly EXPECT_GRIDS=2
-readonly BASE_ZOOM=13
+# Two lattice blocks, one of them holding tiles of two configurations, so three grids and two inis.
+readonly EXPECT_GRIDS=3
+readonly EXPECT_INIS=2
 
 cd "$REPO"
 rm -rf "$SCRATCH"
@@ -83,7 +84,10 @@ echo '==> the plan'
 check 'grids.csv exists' test -s "${OUT}/pipeline_info/grids.csv"
 check "the region split into ${EXPECT_GRIDS} grids" \
     test "$(($(wc -l < "${OUT}/pipeline_info/grids.csv") - 1))" -eq "$EXPECT_GRIDS"
-check 'the effective ini was published' test -s "${OUT}/pipeline_info/effective.ini"
+check "an effective ini was published for each of the ${EXPECT_INIS} configurations" \
+    test "$(find "${OUT}/pipeline_info" -name 'effective.*.ini' -size +0 | wc -l)" -eq "$EXPECT_INIS"
+check 'each grid was rendered with the ini of its configuration' \
+    test "$(awk -F, 'NR > 1 { print $3 }' "${OUT}/pipeline_info/grids.csv" | sort -u | wc -l)" -eq "$EXPECT_INIS"
 check 'plan_summary.txt was published' test -s "${OUT}/pipeline_info/plan_summary.txt"
 
 # The point of the whole tail of the pipeline: every parent tile the plan promised has to reach the
@@ -111,8 +115,8 @@ check 'the sprite was published' test -s "${OUT}/map/sprite.png"
 check 'the viewer was published' test -s "${OUT}/map/index.html"
 check 'every placeholder in the style was filled in' \
     bash -c "test -s '${OUT}/map/style.json' && ! grep -q 'mapant:' '${OUT}/map/style.json'"
-check 'the style starts the map at the base zoom' \
-    grep -q "\"minzoom\": ${BASE_ZOOM}" "${OUT}/map/style.json"
+check 'the style draws the paper from the coverage layer' \
+    grep -q '"source-layer": "coverage"' "${OUT}/map/style.json"
 check 'the viewer falls back to OSM below it' \
     grep -q 'tile.openstreetmap.org' "${OUT}/map/index.html"
 

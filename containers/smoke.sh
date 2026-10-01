@@ -4,7 +4,7 @@
 # Run by CI on every image it builds, and usable by hand against a local build:
 #
 #   containers/smoke.sh tiler                                 # localhost/mapant/tiler:latest
-#   containers/smoke.sh karttapullautin ghcr.io/grst/mapant-nf/karttapullautin:c2a060f
+#   containers/smoke.sh karttapullautin ghcr.io/grst/mapant-nf/karttapullautin:83a52ad
 #
 # These are not unit tests for the tools; they are checks for the handful of things that have gone
 # wrong here before, each of which produced a failure that named something other than its cause:
@@ -138,6 +138,15 @@ case "$NAME" in
             tile-join --force --no-tile-size-limit --no-tile-stats --name t --attribution a \
                 --output=b.pmtiles a.pmtiles a.pmtiles 2> /dev/null
             head -c 7 b.pmtiles | grep -q PMTiles'
+        check 'pmtiles rewrites a header' run bash -c '
+            set -e; cd /tmp
+            echo "{\"type\":\"Feature\",\"properties\":{},\"geometry\":{\"type\":\"Point\",\"coordinates\":[10.2,47.5]}}" > p.json
+            tippecanoe --force --output=a.pmtiles --maximum-zoom=10 --no-tile-stats --no-progress-indicator \
+                --named-layer=p:p.json 2> /dev/null
+            pmtiles show a.pmtiles --header-json > h.json
+            pmtiles show a.pmtiles --metadata > m.json
+            pmtiles edit a.pmtiles --header-json=h.json --metadata=m.json
+            pmtiles show a.pmtiles > /dev/null'
         # What bin/*.py imports: pyproj for plan_grids.py, mercantile for the tile arithmetic, and
         # Pillow for the sprite make_viewer.py draws.
         check 'the python imports' run python -c 'import pyproj, mercantile, PIL'

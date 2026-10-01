@@ -12,8 +12,7 @@ process PULLAUTA_GRID {
     label 'process_pullauta'
 
     input:
-    tuple val(grid_id), path(grid_csv), path(shapes_zip)
-    path effective_ini
+    tuple val(grid_id), path(grid_csv), path(shapes_zip), path(effective_ini)
     // Pinned to the name RENDER_INI writes into the ini's `vectorconf` key, so a user's shape
     // mapping file can be called anything.
     path(vectorconf, stageAs: 'osm.txt')

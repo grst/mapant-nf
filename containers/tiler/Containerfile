@@ -23,6 +23,16 @@ RUN git clone --depth 1 --branch "${TIPPECANOE_VERSION}" https://github.com/felt
  && make -C /src install
 
 
+# go-pmtiles, for `pmtiles edit`: MERGE_PMTILES rewrites the header tile-join writes. A static
+# binary from the release, pinned by its sha256.
+FROM docker.io/library/debian:stable-slim AS pmtiles
+ARG PMTILES_VERSION=1.28.0
+ARG PMTILES_SHA256=35c33b3881fabf2669f85455bd38e8102d76acd58802d7f310164e2bab1a5e23
+ADD https://github.com/protomaps/go-pmtiles/releases/download/v${PMTILES_VERSION}/go-pmtiles_${PMTILES_VERSION}_Linux_x86_64.tar.gz /tmp/pmtiles.tar.gz
+RUN echo "${PMTILES_SHA256}  /tmp/pmtiles.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/pmtiles.tar.gz -C /usr/local/bin pmtiles
+
+
 FROM docker.io/library/python:3.13-slim
 
 # procps: Nextflow shells out to `ps` for task metrics and fails the task without it.
@@ -37,6 +47,7 @@ RUN apt-get -o APT::Sandbox::User=root update \
 
 COPY --from=tippecanoe /usr/local/bin/tippecanoe /usr/local/bin/tippecanoe
 COPY --from=tippecanoe /usr/local/bin/tile-join /usr/local/bin/tile-join
+COPY --from=pmtiles /usr/local/bin/pmtiles /usr/local/bin/pmtiles
 
 # Pinned, and pinned here rather than left to resolve at build time, because CI decides whether this
 # image needs rebuilding from the hash of this directory: an unpinned dependency would mean the same
@@ -51,6 +62,7 @@ RUN pip install --no-cache-dir \
       "pillow==12.3.0" \
       "pyproj==3.7.2" \
  && python -c "import pyproj, mercantile, PIL" \
- && tippecanoe --version
+ && tippecanoe --version \
+ && pmtiles version
 
 CMD ["/bin/bash"]

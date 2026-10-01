@@ -69,7 +69,7 @@ def test_the_style_draws_only_layers_the_tiles_have(viewer):
     """A style layer naming a source layer the tiles do not carry draws nothing."""
     style = json.loads((viewer / "style.json").read_text())
     used = {layer["source-layer"] for layer in style["layers"] if "source-layer" in layer}
-    assert used <= {layer.name for layer in mvt.LAYERS}
+    assert used <= set(mvt.TABLES)
 
 
 def test_every_image_the_style_names_is_in_the_sprite(viewer):

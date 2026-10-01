@@ -33,14 +33,15 @@
                     "type": "string",
                     "format": "file-path",
                     "exists": true,
-                    "description": "karttapullautin parameter file controlling the cartography.",
-                    "help_text": "Everything about the map's appearance -- contour interval, the vegetation and cliff models, form lines. The pipeline overrides only the keys it must own (batch mode, thread count, input/output folders) and publishes the result as the run's provenance record."
+                    "description": "Default karttapullautin parameter file, for tiles whose `pullauta_ini` column in the tiles CSV is absent or empty.",
+                    "help_text": "Everything about the map's appearance -- contour interval, the vegetation and cliff models, form lines. The tiles CSV can name an ini per tile (`pullauta_ini`, a path relative to the launch directory), which takes precedence: a lattice block with tiles of two configurations is rendered as two grids. The pipeline overrides only the keys it must own (batch mode, thread count, input/output folders) and publishes each effective ini as the run's provenance record."
                 },
                 "vectorconf": {
                     "type": "string",
                     "format": "file-path",
                     "exists": true,
-                    "description": "Shape mapping file (osm.txt) translating OSM tags to ISOM map symbols."
+                    "description": "Shape mapping file (osm.txt) translating OSM tags to ISOM map symbols.",
+                    "help_text": "Every key its rules test is exposed as a shapefile column for karttapullautin to match on (bin/osmconf.py), so a rule on any OSM key works. The ISOM 2000 codes it assigns are translated to ISOM 2017-2 in the tiles."
                 },
                 "outdir": {
                     "type": "string",
@@ -179,8 +180,8 @@
                     "default": 11,
                     "minimum": 0,
                     "maximum": 22,
-                    "description": "Shallowest zoom level of the pyramid, and the unit tiling is parallelised over.",
-                    "help_text": "One task per base-zoom tile, cutting everything under it: a tile one zoom shallower covers four times the ground and needs about four times the memory. Raise it on a memory-constrained machine. Nothing is generated below it -- the viewer shows OSM's own tiles there instead."
+                    "description": "The zoom tiling is parallelised over. The pyramid starts one zoom above it, with an overview level that has no contours.",
+                    "help_text": "One task per base-zoom tile, cutting everything under it, plus its quarter of the overview tile at base_zoom - 1: a tile one zoom shallower covers four times the ground and needs about four times the memory. Raise it on a memory-constrained machine. Nothing is generated below the overview level -- the viewer shows OSM's own tiles there instead."
                 },
                 "max_zoom": {
                     "type": "integer",

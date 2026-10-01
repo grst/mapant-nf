@@ -65,7 +65,8 @@ its cartography.** It is given each grid's LiDAR *and* its OSM shapes, and with 
 `geojson_wgs84=1` (set by `bin/render_ini.py`; `epsg` per grid by `bin/run_pullauta.py`) writes each
 tile's map as one GeoJSON per layer, in WGS84, already in its published form: contours generalised
 and broken around the knolls, cliff dashes chained into lines, vegetation traced, OSM shapes matched
-to their ISOM codes and cropped per tile. The pipeline does not open those files. That requires the
+to their ISOM codes and cropped per tile, contours hidden under the rules' lake areas
+(`contour_mask`). That requires the
 karttapullautin branch built on @malpou's fork (`feature/vector-stack`, grst/karttapullautin#3; see
 `HANDOFF-malpou-stack.md` next to the repositories), which is what the image is built from, pinned
 to a commit. Point it back at an upstream release once that work is released.
@@ -75,9 +76,33 @@ that the two still agree** — adding, removing or re-plumbing a process means e
 re-rendering, or the picture at the top of the README quietly starts lying. Its station ids are the
 process names on purpose, which is also what lets `nf-metro serve` light it up live.
 
-The map spans `base_zoom`..`max_zoom` only, in 512 px tiles (MapLibre's zooms; z15 shows as much
-per screen pixel as z16 in 256 px tiles). There is deliberately no overview step: below the base
-zoom the viewer shows OSM's own raster tiles.
+The map spans `base_zoom - 1`..`max_zoom`, in 512 px tiles (MapLibre's zooms; z15 shows as much
+per screen pixel as z16 in 256 px tiles, which is why tippecanoe cuts at `--full-detail=13`, an
+8192 extent). The shallowest level is an overview without contours; each parent cuts its quarter
+of the overview tile above it and `tile-join` puts the four together, exactly like the buffer tiles
+below. There is deliberately no overview *step*: below that level the viewer shows OSM's own raster
+tiles.
+
+**The tiles are in isom-maplibre's schema** (https://github.com/MetsaApp/isom-maplibre), so that
+style -- which the mapant-bayern webapp draws with -- reads them as they are: one layer per table
+(`contours`, `cliffs`, `knolls_points`, `vegetation_areas`, `water`, `paths`, `manmade`) chosen by
+symbol, each feature's ISOM 2017-2 code as `isom_code` (`"403.000"`), and a `coverage` layer of the
+rendered tiles' footprints, drawn from `parent_tiles.csv`'s tile boxes. The OSM shapes are numbered in
+ISOM 2000 by the rules file and translated with Mapper's crosswalk, `assets/isom2000-isom2017-2.crt`,
+keyed on the code, so a region's own rules file maps too. karttapullautin's `layer` and `isom` stay on
+every feature; mapant-bayern's OCD export used to read them.
+
+**One run, several configurations.** The samplesheet may name an ini per tile (`pullauta_ini`,
+relative to the launch directory), which wins over `--pullauta_ini`. `PLAN_GRIDS` gives each a short
+id from its file name, splits a lattice block with tiles of two configurations into two grids (the
+grid id ends in the ini id) and writes `inis.csv`; `RENDER_INI` runs once per configuration and each
+grid is joined to its ini. The halo ignores configurations: it is points. The style takes its colours
+from the first ini by id.
+
+**The OSM rules decide the shapefile columns.** `OSM_TO_SHAPES` writes an `osmconf.ini`
+(`bin/osmconf.py`) adding every key the rules file tests to every layer. ogr2ogr's default puts
+`power`, `water` and most other keys into `other_tags`, where karttapullautin's rules never see them --
+that is how power lines were missing without a word.
 
 The style is a template, `assets/viewer/style.json`, plain MapLibre JSON that Maputnik can edit.
 `MAKE_VIEWER` (`bin/make_viewer.py`) fills in only what depends on the run -- widths in ground
@@ -85,8 +110,9 @@ metres at the region's latitude, the colours karttapullautin took from the ini, 
 patterns per zoom -- and draws the sprite. Nothing in it may assume Bavaria: the pipeline is meant
 for any region, which is why the latitude comes from the plan and the LiDAR credit is a parameter.
 
-`MAKE_VECTOR_TILES` hands the bundles' files to tippecanoe unaltered, one `--named-layer` per
-file, the layer being the name karttapullautin gave the file. One task per base-zoom parent, each
+`MAKE_VECTOR_TILES` (`bin/make_vector_tiles.py`) reads the bundles' GeoJSON once, sorts every
+feature into its table with its `isom_code` and its tippecanoe `minzoom`, and hands one
+newline-delimited file per table to tippecanoe. One task per base-zoom parent, each
 writing its own `.pmtiles`, `groupKey` fan-in, `remainder: true`. `MERGE_PMTILES` joins them with
 `tile-join`: the one step that waits for the whole run, and unavoidably so -- an archive has one
 directory -- but it stages a few hundred archives, never the tiles. Three things are load-bearing:
@@ -97,8 +123,8 @@ directory -- but it stages a few hundred archives, never the tiles. Three things
   appearing and disappearing along the line where two parents meet -- a lake on an overview tile in
   one and not the other -- and it also truncated the *deepest* zoom, which is the one the OCD export
   in mapant-bayern reads. They are all off (`--no-tile-size-limit`, `--no-feature-limit`,
-  `--drop-rate=1`); what each zoom shows is the zoom plan in `make_vector_tiles.py`, passed as a
-  `--feature-filter` on each feature's own `isom` and `$zoom`, so it depends on the feature alone.
+  `--drop-rate=1`); what each zoom shows is the zoom plan in `make_vector_tiles.py`, written as each
+  feature's own tippecanoe `minzoom` from its `isom` and table, so it depends on the feature alone.
 - **Two shades of green share their boundary vertex for vertex**, because karttapullautin traces them
   from one grid. `--detect-shared-borders` and `--no-simplification-of-shared-nodes` keep tippecanoe
   from simplifying that boundary twice, which would leave a sliver of white paper between them.
@@ -156,8 +182,10 @@ shapes per tile, so each piece of a road is written by exactly one tile.
   the wrong place.
 - **Nextflow 26.04 defaults to the strict v2 parser**: no top-level statements, no implicit `it`, no
   `for`/`while` in a workflow body, `channel.` not `Channel.`. `nextflow lint .` is the gate.
-- **A one-item queue channel pairs with exactly one consumer.** `RENDER_INI.out.ini.first()` makes it
-  a value channel; without `.first()` every grid but one starves.
+- **A one-item queue channel pairs with exactly one consumer.** `PLAN_GRIDS.out.parent_index.first()`
+  makes it a value channel for `MAKE_VECTOR_TILES`; without `.first()` every parent but one starves.
+- **A new script in `bin/` needs its executable bit**, or the task dies with `Permission denied`
+  (exit 126) -- in a container, too, because `bin/` is mounted, not copied.
 - **Never edit a staged input in place** — it is a symlink to the user's file. `RENDER_INI` uses
   `stageAs` plus a copy for this reason.
 - **No `$projectDir` inside a process body**: on an executor without a shared filesystem that path

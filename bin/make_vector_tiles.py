@@ -368,6 +368,10 @@ def tippecanoe_command(
         # open a sliver of white paper between them; these keep it one line.
         "--detect-shared-borders",
         "--no-simplification-of-shared-nodes",
+        # The deepest zoom is what every deeper view is overzoomed from, so it keeps its geometry
+        # as karttapullautin wrote it. Simplified "to one tile unit", it lost the rounded
+        # contours' vertices down to ~3 m segments, which show as corners at z17.
+        "--simplify-only-low-zooms",
         "--attribute-type=elevation:float",
         "--attribute-type=shade:int",
         "--attribute-type=isom_code:string",

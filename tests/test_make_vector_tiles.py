@@ -202,6 +202,7 @@ def test_tippecanoe_decides_nothing_by_size_and_cuts_512_px_tiles(tmp_path):
     assert "--drop-rate=1" in command
     assert not [flag for flag in command if "drop-densest" in flag or "as-needed" in flag]
     assert "--detect-shared-borders" in command
+    assert "--simplify-only-low-zooms" in command  # the deepest zoom is drawn overzoomed
 
 
 @pytest.mark.skipif(shutil.which("tippecanoe") is None, reason="needs tippecanoe")

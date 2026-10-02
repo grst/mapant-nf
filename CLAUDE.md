@@ -115,7 +115,7 @@ feature into its table with its `isom_code` and its tippecanoe `minzoom`, and ha
 newline-delimited file per table to tippecanoe. One task per base-zoom parent, each
 writing its own `.pmtiles`, `groupKey` fan-in, `remainder: true`. `MERGE_PMTILES` joins them with
 `tile-join`: the one step that waits for the whole run, and unavoidably so -- an archive has one
-directory -- but it stages a few hundred archives, never the tiles. Three things are load-bearing:
+directory -- but it stages a few hundred archives, never the tiles. Four things are load-bearing:
 
 - **Nothing may be left out to fit a budget.** Every one of tippecanoe's thinning options
   (`--drop-densest-as-needed` and the rest) decides per tile, from whatever happens to be in it, so
@@ -128,6 +128,9 @@ directory -- but it stages a few hundred archives, never the tiles. Three things
 - **Two shades of green share their boundary vertex for vertex**, because karttapullautin traces them
   from one grid. `--detect-shared-borders` and `--no-simplification-of-shared-nodes` keep tippecanoe
   from simplifying that boundary twice, which would leave a sliver of white paper between them.
+- **The deepest zoom is not simplified** (`--simplify-only-low-zooms`). Every deeper view is
+  drawn overzoomed from it, and simplified "to one tile unit" it lost the contours' vertices
+  down to ~3 m segments -- corners on small hills at z17, whatever karttapullautin smoothed.
 - **`--clip-bounding-box` clips geometry but still writes tiles outside the parent** when their
   buffer reaches in. They hold this parent's side of the border, and the neighbour's copy of the
   same tile holds the other side; `tile-join` merges the layers of a tile present in several

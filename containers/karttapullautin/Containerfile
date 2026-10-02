@@ -25,7 +25,7 @@ FROM docker.io/library/rust:1.97-bookworm AS build
 ARG PULLAUTA_REPO=https://github.com/grst/karttapullautin
 # A commit rather than a branch, so the same build context always builds the same renderer. It
 # is also the image's tag (see containers/build.sh), so bumping it publishes a new image.
-ARG PULLAUTA_REF=fa7615c9e7edd268f75873e64ac2093480d72431
+ARG PULLAUTA_REF=3662d2e4da10f1b27831b8110daf0bd4f4d49450
 ARG CARGO_TARGET=x86_64-unknown-linux-gnu
 
 WORKDIR /src

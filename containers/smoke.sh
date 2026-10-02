@@ -4,7 +4,7 @@
 # Run by CI on every image it builds, and usable by hand against a local build:
 #
 #   containers/smoke.sh tiler                                 # localhost/mapant/tiler:latest
-#   containers/smoke.sh karttapullautin ghcr.io/grst/mapant-nf/karttapullautin:83a52ad
+#   containers/smoke.sh karttapullautin ghcr.io/grst/mapant-nf/karttapullautin:a398d9c
 #
 # These are not unit tests for the tools; they are checks for the handful of things that have gone
 # wrong here before, each of which produced a failure that named something other than its cause:

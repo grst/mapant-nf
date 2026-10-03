@@ -38,11 +38,6 @@ on:
         type: boolean
         required: false
         default: false
-      publish:
-        description: 'Publish from a branch other than main (ctx-<hash> and the version tag; `latest` only for images whose version tag it is)'
-        type: boolean
-        required: false
-        default: false
 
 concurrency:
   group: containers-${{ github.event.pull_request.number || github.ref }}
@@ -114,11 +109,9 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
     env:
-      # Publish from main. A workflow_dispatch on a branch still builds and smoke-tests, which makes it
-      # a usable way to try a Containerfile change without publishing it -- unless it asks to publish,
-      # for a branch whose pipeline needs an image that main does not have yet.
-      DEPLOY: ${{ github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.event.inputs.publish == 'true') }}
-      MAIN: ${{ github.ref == 'refs/heads/main' }}
+      # Publish only from main. A workflow_dispatch on a branch still builds and smoke-tests, which
+      # makes it a usable way to try a Containerfile change without publishing it.
+      DEPLOY: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
       FORCE: ${{ github.event.inputs.force == 'true' }}
     steps:
       - uses: actions/checkout@v4
@@ -194,11 +187,8 @@ jobs:
         run: |
           set -euo pipefail
           # ctx-<hash> is the immutable one; the others move. Deduplicated because `latest` is already
-          # the version tag for three of the four images. A branch never moves `latest` of an image
-          # that has a version tag of its own: main's pipeline may be using it.
-          latest=latest
-          [ "${MAIN}" = true ] || latest=''
-          for tag in $(printf '%s\n%s\n%s\n' "${CTX_TAG}" '${{ matrix.tag }}' "${latest}" | grep . | sort -u); do
+          # the version tag for three of the four images.
+          for tag in $(printf '%s\n%s\n%s\n' "${CTX_TAG}" '${{ matrix.tag }}' latest | sort -u); do
               docker push "${IMAGE}:${tag}"
           done
 

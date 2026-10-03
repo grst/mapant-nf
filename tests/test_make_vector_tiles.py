@@ -159,33 +159,38 @@ def square(x0, y0, size, hole=None):
             "geometry": {"type": "Polygon", "coordinates": rings}}
 
 
-def test_small_vegetation_patches_are_recognised(tmp_path):
+def test_a_patch_appears_from_the_zoom_it_covers_enough_pixels_at(tmp_path):
     box = (593000, 5269000, 594000, 5270000)
     small = mvt.SmallAreas(16, 11, {"593_5269": ("EPSG:25832", *box)})
-    # a z11 pixel is ~26 m here, so 16 px is ~1.1 ha
-    assert small("593_5269", square(593400, 5269400, 80)["geometry"])  # 0.64 ha
-    assert not small("593_5269", square(593400, 5269400, 150)["geometry"])  # 2.25 ha
+
+    def first(size, x=593400, hole=None):
+        return small.first_zoom("593_5269", square(x, 5269400, size, hole)["geometry"])
+
+    # a z11 pixel is ~26 m here: 16 px is ~1.1 ha at z11, ~4.3 ha at z10, ~0.27 ha at z12
+    assert first(250) is None  # 6.25 ha: on the overview already
+    assert first(150) == 11  # 2.25 ha
+    assert first(80) == 12  # 0.64 ha
+    assert first(40) == 13  # 0.16 ha
+    assert first(20) == 14  # 0.04 ha
     # holes count against the area
-    assert small("593_5269", square(593400, 5269400, 150, hole=(593410, 5269410, 130))["geometry"])
+    assert first(150, hole=(593410, 5269410, 130)) == 12
     # a patch on the tile's edge is part of an area that goes on next door: kept
-    assert not small("593_5269", square(593000, 5269400, 50)["geometry"])
-    # lines and points are not areas
-    assert not small("593_5269", {"type": "LineString", "coordinates": [[10.25, 47.56], [10.26, 47.57]]})
-    assert not mvt.SmallAreas(0, 11, {})("593_5269", square(593400, 5269400, 10)["geometry"])
+    assert first(50, x=593000) is None
+    # lines are not areas, and 0 switches the rule off
+    assert small.first_zoom("593_5269", {"type": "LineString", "coordinates": [[10.25, 47.56], [10.26, 47.57]]}) is None
+    assert mvt.SmallAreas(0, 11, {}).first_zoom("593_5269", square(593400, 5269400, 10)["geometry"]) is None
 
 
-def test_write_tables_shows_small_patches_from_two_zooms_above_the_deepest(tmp_path):
+def test_write_tables_shows_every_patch_from_one_zoom_above_the_deepest(tmp_path):
     box = (593000, 5269000, 594000, 5270000)
     write_bundle(tmp_path / "in", "593_5269", {
-        "vegetation": [square(593400, 5269400, 80), square(593400, 5269600, 200)]})
+        "vegetation": [square(593400, 5269400, 80), square(593400, 5269600, 300), square(593600, 5269600, 5)]})
     parent_tiles = write_parent_tiles(tmp_path / "p.csv", {"593_5269": box})
-    plan = mvt.ZoomPlan(11, 15)
     small = mvt.SmallAreas(16, 11, mvt.tile_boxes(parent_tiles, {"593_5269"}))
-    tables = mvt.write_tables(mvt.bundle_files(tmp_path / "in"), [], plan, mvt.Classifier(CROSSWALK),
-                              tmp_path / "t", small)
+    tables = mvt.write_tables(mvt.bundle_files(tmp_path / "in"), [], mvt.ZoomPlan(11, 15),
+                              mvt.Classifier(CROSSWALK), tmp_path / "t", small)
     (_, path, _), = tables
-    assert [json.loads(line)["tippecanoe"]["minzoom"] for line in path.read_text().splitlines()] == [13, 10]
-
+    assert [json.loads(line)["tippecanoe"]["minzoom"] for line in path.read_text().splitlines()] == [12, 10, 14]
 
 def test_the_overview_level_has_no_contour_lines():
     plan = mvt.ZoomPlan(base=13, max=15)

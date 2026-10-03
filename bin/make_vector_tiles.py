@@ -35,7 +35,7 @@ MERGE_PMTILES joins them.
 
 Where a feature first appears is counted from the deepest zoom: 0 is the deepest zoom only, -1 from
 one zoom shallower, and so on. The shallow zooms show the map as it reads at a glance: roads but not
-tracks, and no vegetation patch smaller than `--min-area-px` pixels of the parent's zoom.
+tracks, and a vegetation patch only from the zoom it covers `--min-area-px` pixels at.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ import pyproj
 #: Drawn at every zoom of the pyramid.
 ALL_ZOOMS = -99
 
-#: Where a vegetation patch too small for the shallow zooms first appears (see SmallAreas).
-SMALL_AREAS_FROM = -2
+#: Where every vegetation patch is shown, whatever its size (see SmallAreas).
+SMALL_AREAS_FROM = -1
 
 
 @dataclass(frozen=True)
@@ -318,8 +318,10 @@ def polygons(geometry: dict) -> list:
 
 class SmallAreas:
     """
-    Which vegetation polygons are too small for the shallow zooms (shallower than SMALL_AREAS_FROM):
-    under `min_px` pixels of the parent's zoom, holes taken out. A pixel there is about 26 m at 47 deg N for a z11 parent.
+    The zoom a vegetation polygon first appears at: the shallowest one it covers `min_px` pixels of,
+    holes taken out. The same size on screen at every zoom is a quarter of the ground area one zoom
+    deeper, so a zoom out drops more: with 16 px at 47 deg N, patches under ~4.3 ha at z10, ~1.1 ha
+    at z11, ~0.27 ha at z12 and ~0.07 ha at z13. Every patch is shown from SMALL_AREAS_FROM.
 
     A polygon that reaches its tile's edge is never small: it is the cut-off part of an area that
     goes on in the neighbouring tile, and judging the part alone would bite notches out of a large
@@ -332,6 +334,7 @@ class SmallAreas:
 
     def __init__(self, min_px: float, zoom: int, boxes: dict[str, Box]):
         self.min_px = min_px
+        self.zoom = zoom
         self.world = 512 * 2**zoom
         self.boxes = boxes
         self.transformers: dict[str, pyproj.Transformer] = {}
@@ -362,10 +365,17 @@ class SmallAreas:
                     return True
         return False
 
-    def __call__(self, stem: str, geometry: dict) -> bool:
+    def first_zoom(self, stem: str, geometry: dict) -> int | None:
+        """The zoom the polygon covers `min_px` pixels from; None if its size does not matter."""
         if self.min_px <= 0 or not polygons(geometry):
-            return False
-        return self.area_px(geometry) < self.min_px and not self.on_tile_edge(stem, geometry)
+            return None
+        area = self.area_px(geometry)  # pixels of self.zoom; each zoom deeper has four times as many
+        if area <= 0:
+            return None
+        zoom = self.zoom + max(-self.zoom, math.ceil(math.log(self.min_px / area, 4)))
+        if zoom <= self.zoom - 1 or self.on_tile_edge(stem, geometry):  # on the overview anyway
+            return None
+        return zoom
 
 
 def write_tables(
@@ -402,9 +412,11 @@ def write_tables(
                 properties = feature.setdefault("properties", {})
                 properties["isom_code"] = code
                 shown_from = layer.shown_from_of(str(properties.get("isom", "")))
-                if table == "vegetation_areas" and small and small(stem, feature["geometry"]):
-                    shown_from = max(shown_from, SMALL_AREAS_FROM)
                 minzoom = plan.minzoom(shown_from, table)
+                if table == "vegetation_areas" and small:
+                    first = small.first_zoom(stem, feature["geometry"])
+                    if first is not None:
+                        minzoom = max(minzoom, min(first, plan.minzoom(SMALL_AREAS_FROM, table)))
                 write(table, feature, minzoom)
     finally:
         for fh in handles.values():
@@ -480,8 +492,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="parent_tiles.csv from plan_grids.py, for the tiles' footprints")
     ap.add_argument("--buffer", type=int, default=4, help="tile buffer in 1/256 of a tile")
     ap.add_argument("--min-area-px", type=float, default=16,
-                    help="vegetation polygons smaller than this, in pixels of the parent's zoom, are "
-                         "shown only from SMALL_AREAS_FROM (0: keep all)")
+                    help="a vegetation polygon is shown from the zoom it covers this many pixels at, and "
+                         "from SMALL_AREAS_FROM whatever its size (0: at every zoom)")
     ap.add_argument("--work-dir", type=Path, default=Path("tables"))
     args = ap.parse_args(argv)
 

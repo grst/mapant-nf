@@ -195,8 +195,8 @@
                     "type": "number",
                     "default": 16,
                     "minimum": 0,
-                    "description": "Vegetation patches smaller than this, in pixels of base_zoom, appear only from max_zoom - 2.",
-                    "help_text": "Generalisation for the shallow zooms, where a mosaic of small patches reads as noise. Measured in 512 px tiles of base_zoom (at z11 a pixel is about 26 m at 47 deg N, so 16 px is about 1 ha). A patch reaching its LiDAR tile's edge is kept, since it is part of an area that continues next door. The patches appear from max_zoom - 2 (SMALL_AREAS_FROM in make_vector_tiles.py). 0 keeps everything."
+                    "description": "A vegetation patch appears from the zoom it covers this many pixels at; all of them from max_zoom - 1.",
+                    "help_text": "Generalisation for the shallow zooms, where a mosaic of small patches reads as noise. Measured in 512 px tiles of each zoom, so the same size on screen everywhere: one zoom out, four times the ground area is dropped. With 16 px at 47 deg N, patches under ~4.3 ha are left off z10, ~1.1 ha z11, ~0.27 ha z12 and ~0.07 ha z13; every patch is shown from max_zoom - 1 (SMALL_AREAS_FROM in make_vector_tiles.py). A patch reaching its LiDAR tile's edge is kept, since it is part of an area that continues next door. 0 keeps everything."
                 }
             }
         }

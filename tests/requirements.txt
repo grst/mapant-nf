@@ -1,15 +1,18 @@
 # Python dependencies for the tests, and for running bin/*.py outside a container.
 #
 # Pinned so that CI fails when someone changes this file, not on a random Tuesday when a dependency
-# releases. Deliberately NOT the same set as the k2t image, which installs karttapullautin2tiles and
-# lets pip resolve the rest because what it has to match is k2t's own requirements.
+# releases. It overlaps containers/tiler/Containerfile without being generated from it: that one is
+# what the tasks run with, this one is what the tests and a local `nextflow run` need.
 #
 # jsonschema and shapely are test-only: the first checks assets/schema_tiles.json, the second is the
 # independent geometry check on the halo that bin/plan_grids.py itself no longer needs.
 #
+# pillow for bin/make_viewer.py, which draws the sprite.
+#
 #   python -m venv .venv && .venv/bin/pip install -r tests/requirements.txt
 jsonschema==4.26.0
 mercantile==1.2.1
+pillow==12.3.0
 pyproj==3.7.2
 pytest==9.1.1
 shapely==2.1.2

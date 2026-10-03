@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<!--
+  A preview of the map: style.json over mapant.pmtiles, with OSM's own tiles below the base zoom.
+  Nothing in it is specific to a run; it reads the zoom range and extent from the archive.
+
+  PMTiles is read with HTTP range requests, so serve the directory with something that supports
+  them (`npx serve`, nginx, any object store) -- `python -m http.server` does not.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mapant</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.css">
+<script src="https://unpkg.com/maplibre-gl@5.6.0/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"></script>
+<style>
+  html, body { margin: 0; height: 100%; }
+  #map { height: 100%; }
+  .legend {
+    position: absolute; bottom: 12px; left: 12px; z-index: 1;
+    background: rgba(255,255,255,.9); padding: 6px 8px; border-radius: 4px;
+    font: 12px/1.4 system-ui, sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,.3);
+  }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="legend" id="legend"></div>
+<script>
+  // Resolved against the page rather than through URL(), which would percent-encode anything
+  // template-like in them.
+  const base = location.href.replace(/[?#].*$/, '').replace(/[^/]*$/, '');
+  const absolute = (url) => (/^[a-z][a-z0-9+.-]*:/i.test(url) ? url : base + url);
+
+  const protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol('pmtiles', protocol.tile);
+  const archive = new pmtiles.PMTiles(base + 'mapant.pmtiles');
+  protocol.add(archive);
+
+  Promise.all([fetch('style.json').then((r) => r.json()), archive.getHeader()]).then(([style, h]) => {
+    style.sources.mapant.url = 'pmtiles://' + archive.source.getKey();
+    style.sprite = absolute(style.sprite);
+    // Below the pyramid there is nothing to draw, and a viewer wants to see where in the world it
+    // is looking -- which is what OSM's raster is for, and why no overview levels are built.
+    style.sources.osm = {
+      type: 'raster',
+      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+      tileSize: 256,
+      maxzoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+    };
+    style.layers.splice(1, 0, {id: 'osm-background', type: 'raster', source: 'osm', maxzoom: h.minZoom});
+
+    document.title = style.name;
+    document.getElementById('legend').innerHTML =
+      `<strong>${style.name}</strong><br>vector tiles, zoom ${h.minZoom}&ndash;${h.maxZoom} ` +
+      `(overzoomed above)`;
+
+    window.map = new maplibregl.Map({
+      container: 'map',
+      style: style,
+      bounds: [h.minLon, h.minLat, h.maxLon, h.maxLat],
+      maxZoom: h.maxZoom + 4,
+      // Keeps #zoom/lat/lon in the address bar, so a view of the map can be linked to.
+      hash: true
+    });
+    window.map.addControl(new maplibregl.NavigationControl());
+  });
+</script>
+</body>
+</html>

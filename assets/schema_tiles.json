@@ -4,7 +4,9 @@
     "title": "mapant - tiles CSV contract",
     "description": "One row per LiDAR tile. This file is the pipeline's input contract: any region or country can be processed by producing a CSV that satisfies it. Columns not listed here are ignored, so a source-specific extra column (Bavaria's `units`, which actually holds the Regierungsbezirk name) costs nothing.",
     "type": "array",
-    "uniqueEntries": ["tile"],
+    "uniqueEntries": [
+        "tile"
+    ],
     "items": {
         "type": "object",
         "properties": {
@@ -49,8 +51,22 @@
             "max_y": {
                 "type": "number",
                 "errorMessage": "`max_y` must be a number in the units of `crs`, greater than `min_y`."
+            },
+            "pullauta_ini": {
+                "type": "string",
+                "errorMessage": "`pullauta_ini` is optional: the karttapullautin ini this tile is rendered with, as a path (relative to the launch directory, or absolute). Empty means --pullauta_ini."
             }
         },
-        "required": ["tile", "url", "size_bytes", "sha256", "crs", "min_x", "min_y", "max_x", "max_y"]
+        "required": [
+            "tile",
+            "url",
+            "size_bytes",
+            "sha256",
+            "crs",
+            "min_x",
+            "min_y",
+            "max_x",
+            "max_y"
+        ]
     }
 }

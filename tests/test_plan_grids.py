@@ -247,8 +247,74 @@ def test_grid_ids_are_stable_when_the_region_filter_changes():
         }, f"{grid_id} changed membership; every task in it would re-run"
 
 
-def test_grid_id_encodes_the_epsg_code():
-    assert pg.grid_id_for("EPSG:25832", 590, 5268, 2) == "grid_25832_295_2634"
+def test_grid_id_encodes_the_epsg_code_and_the_configuration():
+    assert pg.grid_id_for("EPSG:25832", 590, 5268, 2, "las14") == "grid_25832_295_2634_las14"
+
+
+# ---------------------------------------------------------------------------
+# configurations: one ini per tile, from the samplesheet
+# ---------------------------------------------------------------------------
+def test_the_samplesheet_ini_takes_precedence_over_the_default(tmp_path):
+    rows = [
+        tile_row(1, 1, pullauta_ini="conf/las12.ini"),
+        tile_row(1, 2, pullauta_ini=""),
+        tile_row(2, 1, pullauta_ini="  conf/las14.ini "),
+    ]
+    csv_path = write_csv(tmp_path / "t.csv", rows, [*TILE_COLUMNS, "pullauta_ini"])
+    tiles = pg.read_tiles(csv_path, "/pipeline/assets/pullauta.ini")
+    assert [t.ini for t in tiles] == ["conf/las12.ini", "/pipeline/assets/pullauta.ini", "conf/las14.ini"]
+    # and without the column at all, every tile gets the default
+    plain = write_csv(tmp_path / "p.csv", [tile_row(1, 1)], TILE_COLUMNS)
+    assert pg.read_tiles(plain, "default.ini")[0].ini == "default.ini"
+
+
+def test_ini_ids_are_short_safe_and_independent_of_row_order():
+    tiles = lattice(range(0, 3), range(0, 1))
+    tiles[0].ini, tiles[1].ini, tiles[2].ini = "b/pullauta.las14.ini", "a/pullauta.las14.ini", "x y.ini"
+    ids = pg.ini_ids(tiles)
+    assert ids == {
+        "a/pullauta.las14.ini": "pullauta_las14",
+        "b/pullauta.las14.ini": "pullauta_las14_2",
+        "x y.ini": "x_y",
+    }
+    assert pg.ini_ids(list(reversed(tiles))) == ids
+
+
+def test_a_block_with_two_configurations_is_two_grids_with_the_same_halo_pool():
+    """
+    Each grid renders its own tiles with its own ini; the tiles of the other configuration in the
+    same block are halo to it, because points are points whatever renders them.
+    """
+    pool = lattice(range(0, 6), range(0, 6))
+    for t in pool:
+        t.ini = "las12.ini" if t.min_x < 3000 else "las14.ini"
+    core = [t for t in pool if 2000 <= t.min_x < 4000 and 2000 <= t.min_y < 4000]
+    grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=2)
+
+    assert sorted(grids) == ["grid_25832_1_1_las12", "grid_25832_1_1_las14"]
+    las12, las14 = grids["grid_25832_1_1_las12"], grids["grid_25832_1_1_las14"]
+    assert {t.tile for t in las12["core"]} == {"2_2.laz", "2_3.laz"}
+    assert {t.tile for t in las14["core"]} == {"3_2.laz", "3_3.laz"}
+    # the las14 tiles next door are in the las12 grid's halo, and the other way round
+    assert {"3_2.laz", "3_3.laz"} <= {t.tile for t in las12["halo"]}
+    assert {"2_2.laz", "2_3.laz"} <= {t.tile for t in las14["halo"]}
+
+
+def test_the_plan_lists_each_configuration_and_its_grids(tmp_path):
+    rows = [tile_row(ix, iy, pullauta_ini="a.ini" if ix < 2 else "") for ix in range(0, 4) for iy in range(0, 2)]
+    csv_path = write_csv(tmp_path / "t.csv", rows, [*TILE_COLUMNS, "pullauta_ini"])
+    out = tmp_path / "out"
+    assert pg.main(["--tiles-csv", str(csv_path), "--outdir", str(out), "--grid-size", "4",
+                    "--default-ini", "/p/b.ini", "--base-zoom", "13"]) == 0
+
+    import csv
+
+    inis = list(csv.DictReader((out / "inis.csv").open()))
+    assert [(r["ini_id"], r["path"], r["n_tiles"]) for r in inis] == [("a", "a.ini", "4"), ("b", "/p/b.ini", "4")]
+    grids = {r["grid_id"]: r["ini_id"] for r in csv.DictReader((out / "grids.csv").open())}
+    assert sorted(grids.values()) == ["a", "b"]
+    parents = list(csv.DictReader((out / "parent_tiles.csv").open()))
+    assert {"min_x", "min_y", "max_x", "max_y"} <= set(parents[0])
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +341,8 @@ def test_derived_envelope_never_undercuts_a_four_corner_transform():
     """
     A UTM box's edges are curves in lon/lat, so transforming only the corners can *under*-estimate
     the envelope. A tile would then be assigned to too few web-mercator parents and the map would
-    have thin missing slivers. This is the mistake k2t's own list_tiles makes, and the reason the
-    parent map is computed here instead.
+    have thin missing slivers. It is a mistake that has been made by a tiler this pipeline used, and
+    the reason the parent map is computed here instead.
 
     For a 1 km tile the two agree to within floating point -- the curvature is negligible at that
     size, which is worth knowing rather than assuming. The property that must hold at every size

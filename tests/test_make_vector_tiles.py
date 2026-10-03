@@ -115,7 +115,7 @@ def test_what_a_zoom_shows_is_a_property_of_the_feature():
 
     def minzoom(layer: str, isom: str, geometry_type: str = "LineString") -> int:
         table, _ = classify(layer, isom, geometry_type)
-        return plan.minzoom(LAYER[layer].levels_of(isom), table)
+        return plan.minzoom(LAYER[layer].shown_from_of(isom), table)
 
     assert plan.overview == 12
     assert minzoom("vegetation", "410", "Polygon") == 12
@@ -128,14 +128,22 @@ def test_what_a_zoom_shows_is_a_property_of_the_feature():
     assert minzoom("contours", "101") == 14
 
 
-def test_minor_roads_and_tracks_start_below_the_parent_zoom():
-    """The overview and the parent's zoom show the main roads only."""
+def test_small_roads_show_a_zoom_before_the_tracks():
     plan = mvt.ZoomPlan(base=11, max=15)
-    for code in ("504", "504T", "505", "505T"):
-        assert plan.minzoom(LAYER["osm_lines"].levels_of(code), "paths") == 12
-    assert plan.minzoom(LAYER["osm_lines"].levels_of("503"), "paths") == 10
-    # never deeper than the pyramid goes
-    assert mvt.ZoomPlan(base=15, max=15).minzoom(mvt.DETAIL, "paths") == 15
+    for code in ("504", "504T"):
+        assert plan.minzoom(LAYER["osm_lines"].shown_from_of(code), "paths") == 11
+    for code in ("505", "505T"):
+        assert plan.minzoom(LAYER["osm_lines"].shown_from_of(code), "paths") == 12
+    assert plan.minzoom(LAYER["osm_lines"].shown_from_of("503"), "paths") == 10
+
+
+def test_shown_from_counts_back_from_the_deepest_zoom():
+    plan = mvt.ZoomPlan(base=11, max=15)
+    assert plan.minzoom(0, "manmade") == 15
+    assert plan.minzoom(-1, "manmade") == 14
+    assert plan.minzoom(-5, "manmade") == 10
+    assert plan.minzoom(-9, "manmade") == 10  # never above the overview
+    assert plan.minzoom(mvt.ALL_ZOOMS, "contours") == 11  # nor contours on it
 
 
 def square(x0, y0, size, hole=None):
@@ -151,7 +159,7 @@ def square(x0, y0, size, hole=None):
             "geometry": {"type": "Polygon", "coordinates": rings}}
 
 
-def test_small_vegetation_patches_are_left_off_the_two_shallowest_zooms(tmp_path):
+def test_small_vegetation_patches_are_recognised(tmp_path):
     box = (593000, 5269000, 594000, 5270000)
     small = mvt.SmallAreas(16, 11, {"593_5269": ("EPSG:25832", *box)})
     # a z11 pixel is ~26 m here, so 16 px is ~1.1 ha
@@ -166,7 +174,7 @@ def test_small_vegetation_patches_are_left_off_the_two_shallowest_zooms(tmp_path
     assert not mvt.SmallAreas(0, 11, {})("593_5269", square(593400, 5269400, 10)["geometry"])
 
 
-def test_write_tables_moves_small_patches_below_the_parent_zoom(tmp_path):
+def test_write_tables_shows_small_patches_from_two_zooms_above_the_deepest(tmp_path):
     box = (593000, 5269000, 594000, 5270000)
     write_bundle(tmp_path / "in", "593_5269", {
         "vegetation": [square(593400, 5269400, 80), square(593400, 5269600, 200)]})
@@ -176,7 +184,7 @@ def test_write_tables_moves_small_patches_below_the_parent_zoom(tmp_path):
     tables = mvt.write_tables(mvt.bundle_files(tmp_path / "in"), [], plan, mvt.Classifier(CROSSWALK),
                               tmp_path / "t", small)
     (_, path, _), = tables
-    assert [json.loads(line)["tippecanoe"]["minzoom"] for line in path.read_text().splitlines()] == [12, 10]
+    assert [json.loads(line)["tippecanoe"]["minzoom"] for line in path.read_text().splitlines()] == [13, 10]
 
 
 def test_the_overview_level_has_no_contour_lines():

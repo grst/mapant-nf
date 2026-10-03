@@ -33,9 +33,9 @@ four 256 px tiles one zoom deeper would. One zoom above the parent's is an overv
 contour lines at all; each of the four parents under an overview tile cuts its own quarter, and
 MERGE_PMTILES joins them.
 
-The two shallowest zooms -- the overview and the parent's own -- show the map as it reads at a
-glance: the main roads but not the minor ones and tracks, and no vegetation patch smaller than
-`--min-area-px` pixels of the parent's zoom.
+Where a feature first appears is counted from the deepest zoom: 0 is the deepest zoom only, -1 from
+one zoom shallower, and so on. The shallow zooms show the map as it reads at a glance: roads but not
+tracks, and no vegetation patch smaller than `--min-area-px` pixels of the parent's zoom.
 """
 
 from __future__ import annotations
@@ -55,12 +55,11 @@ import math
 import mercantile
 import pyproj
 
-#: A layer that is drawn at every zoom of the pyramid.
-ALL_ZOOMS = 99
+#: Drawn at every zoom of the pyramid.
+ALL_ZOOMS = -99
 
-#: A `levels` value: drawn from the zoom below the parent's own, so neither on the overview nor on
-#: the parent's zoom -- detail that would only clutter the map read at a glance.
-DETAIL = -1
+#: Where a vegetation patch too small for the shallow zooms first appears (see SmallAreas).
+SMALL_AREAS_FROM = -2
 
 
 @dataclass(frozen=True)
@@ -68,28 +67,29 @@ class Layer:
     """
     One of karttapullautin's outputs, and the zooms its features show at.
 
-    `levels` is how many zooms below the deepest one a feature is still drawn -- 0 is the deepest
-    zoom only, ALL_ZOOMS every zoom the pyramid has, DETAIL every zoom but the two shallowest -- by
-    the feature's `isom`, with `default` for any code not listed.
+    `shown_from` is the zoom a feature first appears at, counted from the deepest one -- 0 is the
+    deepest zoom only, -1 from one zoom shallower, ALL_ZOOMS every zoom the pyramid has -- by the
+    feature's `isom`, with `default` for any code not listed.
     """
 
     name: str
     default: int = ALL_ZOOMS
-    levels: dict[str, int] = field(default_factory=dict)
+    shown_from: dict[str, int] = field(default_factory=dict)
 
     @property
     def osm(self) -> bool:
         """The OSM shapes, numbered in ISOM 2000 by the rules file; the rest is ISOM 2017-2."""
         return self.name.startswith("osm_")
 
-    def levels_of(self, isom: str) -> int:
-        return self.levels.get(isom, self.default)
+    def shown_from_of(self, isom: str) -> int:
+        return self.shown_from.get(isom, self.default)
 
 
 #: Where each shape is worth drawing, by the ISOM code karttapullautin matched. The network a
-#: runner navigates by -- roads, railways, streams, lakes -- is on every zoom, the minor roads and
-#: tracks from below the parent's zoom; the rest is detail that only reads close up. `T` is karttapullautin's bridge/tunnel variant of a code.
-OSM_LEVELS: dict[str, int] = {
+#: runner navigates by -- roads, railways, streams, lakes -- is on every zoom or nearly, the tracks
+#: from a zoom deeper than the small roads; the rest is detail that only reads close up. `T` is
+#: karttapullautin's bridge/tunnel variant of a code.
+OSM_SHOWN_FROM: dict[str, int] = {
     "306": ALL_ZOOMS,  # watercourse
     "301": ALL_ZOOMS,  # lake
     "301.1": ALL_ZOOMS,  # lake bank line (karttapullautin's outline of a 301 area)
@@ -97,20 +97,20 @@ OSM_LEVELS: dict[str, int] = {
     "502T": ALL_ZOOMS,
     "503": ALL_ZOOMS,  # large road
     "503T": ALL_ZOOMS,
-    "504": DETAIL,  # road
-    "504T": DETAIL,
-    "505": DETAIL,  # vehicle track
-    "505T": DETAIL,
+    "504": -4,  # road
+    "504T": -4,
+    "505": -3,  # vehicle track
+    "505T": -3,
     "515": ALL_ZOOMS,  # railway
     "401": ALL_ZOOMS,  # open land
     "401.1": ALL_ZOOMS,  # its edge
     "310": ALL_ZOOMS,  # marsh
     "527": ALL_ZOOMS,  # settlement
-    "529": 1,  # paved area
-    "529.1": 1,
-    "507": 1,  # small path
-    "507T": 1,
-    "526": 1,  # building
+    "529": -1,  # paved area
+    "529.1": -1,
+    "507": -1,  # small path
+    "507T": -1,
+    "526": -1,  # building
     "524": 0,  # fence
     "516": 0,  # power line
     "414": 0,  # black line
@@ -120,15 +120,15 @@ OSM_LEVELS: dict[str, int] = {
 LAYERS: tuple[Layer, ...] = (
     Layer("yellow"),
     Layer("vegetation"),
-    Layer("undergrowth", default=2),
-    Layer("osm_areas", default=1, levels=OSM_LEVELS),
+    Layer("undergrowth", default=-2),
+    Layer("osm_areas", default=-1, shown_from=OSM_SHOWN_FROM),
     # The index contours carry the shape of the ground and belong on every zoom but the overview;
     # the plain ones only stop being a brown wash once a tile covers about a kilometre.
-    Layer("contours", default=1, levels={"102": ALL_ZOOMS}),
+    Layer("contours", default=-1, shown_from={"102": ALL_ZOOMS}),
     Layer("formlines", default=0),
     Layer("dotknolls", default=0),
-    Layer("cliffs", default=1),
-    Layer("osm_lines", default=1, levels=OSM_LEVELS),
+    Layer("cliffs", default=-1),
+    Layer("osm_lines", default=-1, shown_from=OSM_SHOWN_FROM),
 )
 
 #: The tables, in the order they are written: the order a style that follows the tile draws them
@@ -172,17 +172,10 @@ class ZoomPlan:
     def overview(self) -> int:
         return max(0, self.base - 1)
 
-    @property
-    def detail(self) -> int:
-        """The shallowest zoom below the overview and the parent's own."""
-        return min(self.max, self.base + 1)
-
-    def minzoom(self, levels: int, table: str) -> int:
-        """The zoom a feature that survives `levels` zoom-outs first appears at."""
-        if levels == DETAIL:
-            return self.detail
+    def minzoom(self, shown_from: int, table: str) -> int:
+        """The zoom a feature first appears at, from `shown_from` counted from the deepest zoom."""
         shallowest = self.base if table in NOT_IN_OVERVIEW else self.overview
-        return max(shallowest, self.max - levels)
+        return min(self.max, max(shallowest, self.max + shown_from))
 
 
 def read_crosswalk(path: Path) -> dict[str, str]:
@@ -325,8 +318,8 @@ def polygons(geometry: dict) -> list:
 
 class SmallAreas:
     """
-    Which vegetation polygons are too small for the two shallowest zooms: under `min_px` pixels of
-    the parent's zoom, holes taken out. A pixel there is about 26 m at 47 deg N for a z11 parent.
+    Which vegetation polygons are too small for the shallow zooms (shallower than SMALL_AREAS_FROM):
+    under `min_px` pixels of the parent's zoom, holes taken out. A pixel there is about 26 m at 47 deg N for a z11 parent.
 
     A polygon that reaches its tile's edge is never small: it is the cut-off part of an area that
     goes on in the neighbouring tile, and judging the part alone would bite notches out of a large
@@ -408,10 +401,10 @@ def write_tables(
                 table, code = classifier.classify(layer, feature)
                 properties = feature.setdefault("properties", {})
                 properties["isom_code"] = code
-                levels = layer.levels_of(str(properties.get("isom", "")))
-                minzoom = plan.minzoom(levels, table)
+                shown_from = layer.shown_from_of(str(properties.get("isom", "")))
                 if table == "vegetation_areas" and small and small(stem, feature["geometry"]):
-                    minzoom = max(minzoom, plan.detail)
+                    shown_from = max(shown_from, SMALL_AREAS_FROM)
+                minzoom = plan.minzoom(shown_from, table)
                 write(table, feature, minzoom)
     finally:
         for fh in handles.values():
@@ -488,7 +481,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--buffer", type=int, default=4, help="tile buffer in 1/256 of a tile")
     ap.add_argument("--min-area-px", type=float, default=16,
                     help="vegetation polygons smaller than this, in pixels of the parent's zoom, are "
-                         "left off the overview and the parent's zoom (0: keep all)")
+                         "shown only from SMALL_AREAS_FROM (0: keep all)")
     ap.add_argument("--work-dir", type=Path, default=Path("tables"))
     args = ap.parse_args(argv)
 

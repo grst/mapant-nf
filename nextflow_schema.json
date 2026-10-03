@@ -196,7 +196,7 @@
                     "default": 16,
                     "minimum": 0,
                     "description": "A vegetation patch appears from the zoom it covers this many pixels at; all of them from max_zoom - 1.",
-                    "help_text": "Generalisation for the shallow zooms, where a mosaic of small patches reads as noise. Measured in 512 px tiles of each zoom, so the same size on screen everywhere: one zoom out, four times the ground area is dropped. With 16 px at 47 deg N, patches under ~4.3 ha are left off z10, ~1.1 ha z11, ~0.27 ha z12 and ~0.07 ha z13; every patch is shown from max_zoom - 1 (SMALL_AREAS_FROM in make_vector_tiles.py). A patch reaching its LiDAR tile's edge is kept, since it is part of an area that continues next door. 0 keeps everything."
+                    "help_text": "Generalisation for the shallow zooms, where a mosaic of small patches reads as noise. Measured in 512 px tiles of each zoom, so the same size on screen everywhere: one zoom out, four times the ground area is dropped. With 16 px at 47 deg N, patches under ~4.3 ha are left off z10, ~1.1 ha z11, ~0.27 ha z12 and ~0.07 ha z13; every patch is shown from max_zoom - 1 (SMALL_AREAS_FROM in make_vector_tiles.py). A patch is measured whole: the pieces karttapullautin cuts it into at LiDAR tile edges are added up, and a patch cut where the tiling unit has no neighbouring tile is never dropped. 0 keeps everything."
                 }
             }
         }

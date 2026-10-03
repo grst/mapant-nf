@@ -159,26 +159,49 @@ def square(x0, y0, size, hole=None):
             "geometry": {"type": "Polygon", "coordinates": rings}}
 
 
-def test_a_patch_appears_from_the_zoom_it_covers_enough_pixels_at(tmp_path):
-    box = (593000, 5269000, 594000, 5270000)
-    small = mvt.SmallAreas(16, 11, {"593_5269": ("EPSG:25832", *box)})
+WEST = (593000, 5269000, 594000, 5270000)
+EAST = (594000, 5269000, 595000, 5270000)
 
-    def first(size, x=593400, hole=None):
-        return small.first_zoom("593_5269", square(x, 5269400, size, hole)["geometry"])
 
+def first_zooms(boxes, pieces, min_px=16):
+    """{name: first zoom} of (name, stem, square args) pieces, all of one symbol."""
+    small = mvt.SmallAreas(min_px, 11, {stem: ("EPSG:25832", *box) for stem, box in boxes.items()})
+    for name, stem, args in pieces:
+        small.add(name, stem, "vegetation:406", square(*args)["geometry"])
+    return {name: small.first_zoom(name) for name, _, _ in pieces}
+
+
+def test_a_patch_appears_from_the_zoom_it_covers_enough_pixels_at():
     # a z11 pixel is ~26 m here: 16 px is ~1.1 ha at z11, ~4.3 ha at z10, ~0.27 ha at z12
-    assert first(250) is None  # 6.25 ha: on the overview already
-    assert first(150) == 11  # 2.25 ha
-    assert first(80) == 12  # 0.64 ha
-    assert first(40) == 13  # 0.16 ha
-    assert first(20) == 14  # 0.04 ha
+    sizes = {"6.25 ha": 250, "2.25 ha": 150, "0.64 ha": 80, "0.16 ha": 40, "0.04 ha": 20}
+    pieces = [(name, "593_5269", (593100 + 300 * (k % 3), 5269100 + 300 * (k // 3), size))
+              for k, (name, size) in enumerate(sizes.items())]
+    assert first_zooms({"593_5269": WEST}, pieces) == {
+        "6.25 ha": None,  # on the overview already
+        "2.25 ha": 11, "0.64 ha": 12, "0.16 ha": 13, "0.04 ha": 14}
     # holes count against the area
-    assert first(150, hole=(593410, 5269410, 130)) == 12
-    # a patch on the tile's edge is part of an area that goes on next door: kept
-    assert first(50, x=593000) is None
-    # lines are not areas, and 0 switches the rule off
-    assert small.first_zoom("593_5269", {"type": "LineString", "coordinates": [[10.25, 47.56], [10.26, 47.57]]}) is None
-    assert mvt.SmallAreas(0, 11, {}).first_zoom("593_5269", square(593400, 5269400, 10)["geometry"]) is None
+    assert first_zooms({"593_5269": WEST}, [("ring", "593_5269", (593400, 5269400, 150, (593410, 5269410, 130)))]) \
+        == {"ring": 12}
+    # 0 switches the rule off
+    assert first_zooms({"593_5269": WEST}, [("p", "593_5269", (593400, 5269400, 10))], min_px=0) == {"p": None}
+
+
+def test_a_patch_cut_by_a_tile_edge_is_measured_whole():
+    # 1 ha either side of the shared edge: one 2 ha patch, shown from z11 on both sides (alone,
+    # either half would wait for z12)
+    halves = [("west", "593_5269", (593900, 5269400, 100)),
+              ("east", "594_5269", (594000, 5269400, 100))]
+    assert first_zooms({"593_5269": WEST, "594_5269": EAST}, halves) == {"west": 11, "east": 11}
+    # a forest across the edge: neither piece is judged by its own small share
+    forest = [("west", "593_5269", (593900, 5269300, 100)), ("east", "594_5269", (594000, 5269000, 1000))]
+    assert first_zooms({"593_5269": WEST, "594_5269": EAST}, forest) == {"west": None, "east": None}
+
+
+def test_a_patch_cut_where_this_parent_cannot_see_is_not_judged():
+    # the eastern tile is not in this parent: the piece may go on there
+    assert first_zooms({"593_5269": WEST}, [("west", "593_5269", (593950, 5269400, 50))]) == {"west": None}
+    # a piece merely near the edge, not cut by it, is judged
+    assert first_zooms({"593_5269": WEST}, [("near", "593_5269", (593940, 5269400, 50))]) == {"near": 13}
 
 
 def test_write_tables_shows_every_patch_from_one_zoom_above_the_deepest(tmp_path):

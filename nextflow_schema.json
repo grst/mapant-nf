@@ -190,6 +190,13 @@
                     "maximum": 22,
                     "description": "Deepest zoom level to generate.",
                     "help_text": "The zoom the map is cut at full detail, in 512 px tiles (MapLibre's convention); the layer table in make_vector_tiles.py brings detail in counting down from it (e.g. undergrowth from max_zoom-2). Vector tiles stay sharp when the viewer overzooms them, so z15 -- as much detail per screen pixel as z16 in 256 px tiles -- is enough for the full LiDAR detail. Each extra level roughly quadruples the archive."
+                },
+                "overview_min_area_px": {
+                    "type": "number",
+                    "default": 16,
+                    "minimum": 0,
+                    "description": "Vegetation patches smaller than this, in pixels of base_zoom, are left off the overview and base_zoom levels.",
+                    "help_text": "Generalisation for the two shallowest zooms, where a mosaic of small patches reads as noise. Measured in 512 px tiles of base_zoom (at z11 a pixel is about 26 m at 47 deg N, so 16 px is about 1 ha). A patch reaching its LiDAR tile's edge is kept, since it is part of an area that continues next door. The patches still appear from base_zoom + 1. 0 keeps everything."
                 }
             }
         }

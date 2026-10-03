@@ -26,6 +26,7 @@ process MAKE_VECTOR_TILES {
     make_vector_tiles.py \\
         --parent ${p.z} ${p.x} ${p.y} \\
         --max-zoom ${params.max_zoom} \\
+        --min-area-px ${params.overview_min_area_px} \\
         --crosswalk ${crosswalk} \\
         --parent-tiles ${parent_tiles} \\
         . ${p.z}-${p.x}-${p.y}.pmtiles

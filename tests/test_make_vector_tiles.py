@@ -128,6 +128,57 @@ def test_what_a_zoom_shows_is_a_property_of_the_feature():
     assert minzoom("contours", "101") == 14
 
 
+def test_minor_roads_and_tracks_start_below_the_parent_zoom():
+    """The overview and the parent's zoom show the main roads only."""
+    plan = mvt.ZoomPlan(base=11, max=15)
+    for code in ("504", "504T", "505", "505T"):
+        assert plan.minzoom(LAYER["osm_lines"].levels_of(code), "paths") == 12
+    assert plan.minzoom(LAYER["osm_lines"].levels_of("503"), "paths") == 10
+    # never deeper than the pyramid goes
+    assert mvt.ZoomPlan(base=15, max=15).minzoom(mvt.DETAIL, "paths") == 15
+
+
+def square(x0, y0, size, hole=None):
+    """A square in the tile's UTM coordinates, as a WGS84 Polygon feature of `vegetation`."""
+    tr = mvt.pyproj.Transformer.from_crs("EPSG:25832", "EPSG:4326", always_xy=True)
+
+    def ring(x, y, s):
+        pts = [(x, y), (x + s, y), (x + s, y + s), (x, y + s), (x, y)]
+        return [list(tr.transform(px, py)) for px, py in pts]
+
+    rings = [ring(x0, y0, size)] + ([ring(*hole)] if hole else [])
+    return {"type": "Feature", "properties": {"isom": "406", "layer": "406"},
+            "geometry": {"type": "Polygon", "coordinates": rings}}
+
+
+def test_small_vegetation_patches_are_left_off_the_two_shallowest_zooms(tmp_path):
+    box = (593000, 5269000, 594000, 5270000)
+    small = mvt.SmallAreas(16, 11, {"593_5269": ("EPSG:25832", *box)})
+    # a z11 pixel is ~26 m here, so 16 px is ~1.1 ha
+    assert small("593_5269", square(593400, 5269400, 80)["geometry"])  # 0.64 ha
+    assert not small("593_5269", square(593400, 5269400, 150)["geometry"])  # 2.25 ha
+    # holes count against the area
+    assert small("593_5269", square(593400, 5269400, 150, hole=(593410, 5269410, 130))["geometry"])
+    # a patch on the tile's edge is part of an area that goes on next door: kept
+    assert not small("593_5269", square(593000, 5269400, 50)["geometry"])
+    # lines and points are not areas
+    assert not small("593_5269", {"type": "LineString", "coordinates": [[10.25, 47.56], [10.26, 47.57]]})
+    assert not mvt.SmallAreas(0, 11, {})("593_5269", square(593400, 5269400, 10)["geometry"])
+
+
+def test_write_tables_moves_small_patches_below_the_parent_zoom(tmp_path):
+    box = (593000, 5269000, 594000, 5270000)
+    write_bundle(tmp_path / "in", "593_5269", {
+        "vegetation": [square(593400, 5269400, 80), square(593400, 5269600, 200)]})
+    parent_tiles = write_parent_tiles(tmp_path / "p.csv", {"593_5269": box})
+    plan = mvt.ZoomPlan(11, 15)
+    small = mvt.SmallAreas(16, 11, mvt.tile_boxes(parent_tiles, {"593_5269"}))
+    tables = mvt.write_tables(mvt.bundle_files(tmp_path / "in"), [], plan, mvt.Classifier(CROSSWALK),
+                              tmp_path / "t", small)
+    (_, path, _), = tables
+    assert [json.loads(line)["tippecanoe"]["minzoom"] for line in path.read_text().splitlines()] == [12, 10]
+
+
 def test_the_overview_level_has_no_contour_lines():
     plan = mvt.ZoomPlan(base=13, max=15)
     # index contours are on every zoom of the pyramid -- except the overview

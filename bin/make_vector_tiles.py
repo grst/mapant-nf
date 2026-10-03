@@ -32,6 +32,10 @@ Zooms are MapLibre's: 512 px tiles. The deepest zoom is cut at an extent of 8192
 four 256 px tiles one zoom deeper would. One zoom above the parent's is an overview level with no
 contour lines at all; each of the four parents under an overview tile cuts its own quarter, and
 MERGE_PMTILES joins them.
+
+The two shallowest zooms -- the overview and the parent's own -- show the map as it reads at a
+glance: the main roads but not the minor ones and tracks, and no vegetation patch smaller than
+`--min-area-px` pixels of the parent's zoom.
 """
 
 from __future__ import annotations
@@ -46,11 +50,17 @@ from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import math
+
 import mercantile
 import pyproj
 
 #: A layer that is drawn at every zoom of the pyramid.
 ALL_ZOOMS = 99
+
+#: A `levels` value: drawn from the zoom below the parent's own, so neither on the overview nor on
+#: the parent's zoom -- detail that would only clutter the map read at a glance.
+DETAIL = -1
 
 
 @dataclass(frozen=True)
@@ -59,8 +69,8 @@ class Layer:
     One of karttapullautin's outputs, and the zooms its features show at.
 
     `levels` is how many zooms below the deepest one a feature is still drawn -- 0 is the deepest
-    zoom only, ALL_ZOOMS every zoom the pyramid has -- by the feature's `isom`, with `default` for
-    any code not listed.
+    zoom only, ALL_ZOOMS every zoom the pyramid has, DETAIL every zoom but the two shallowest -- by
+    the feature's `isom`, with `default` for any code not listed.
     """
 
     name: str
@@ -77,8 +87,8 @@ class Layer:
 
 
 #: Where each shape is worth drawing, by the ISOM code karttapullautin matched. The network a
-#: runner navigates by -- roads, tracks, railways, streams, lakes -- is on every zoom; the rest is
-#: detail that only reads close up. `T` is karttapullautin's bridge/tunnel variant of a code.
+#: runner navigates by -- roads, railways, streams, lakes -- is on every zoom, the minor roads and
+#: tracks from below the parent's zoom; the rest is detail that only reads close up. `T` is karttapullautin's bridge/tunnel variant of a code.
 OSM_LEVELS: dict[str, int] = {
     "306": ALL_ZOOMS,  # watercourse
     "301": ALL_ZOOMS,  # lake
@@ -87,10 +97,10 @@ OSM_LEVELS: dict[str, int] = {
     "502T": ALL_ZOOMS,
     "503": ALL_ZOOMS,  # large road
     "503T": ALL_ZOOMS,
-    "504": ALL_ZOOMS,  # road
-    "504T": ALL_ZOOMS,
-    "505": ALL_ZOOMS,  # vehicle track
-    "505T": ALL_ZOOMS,
+    "504": DETAIL,  # road
+    "504T": DETAIL,
+    "505": DETAIL,  # vehicle track
+    "505T": DETAIL,
     "515": ALL_ZOOMS,  # railway
     "401": ALL_ZOOMS,  # open land
     "401.1": ALL_ZOOMS,  # its edge
@@ -162,8 +172,15 @@ class ZoomPlan:
     def overview(self) -> int:
         return max(0, self.base - 1)
 
+    @property
+    def detail(self) -> int:
+        """The shallowest zoom below the overview and the parent's own."""
+        return min(self.max, self.base + 1)
+
     def minzoom(self, levels: int, table: str) -> int:
         """The zoom a feature that survives `levels` zoom-outs first appears at."""
+        if levels == DETAIL:
+            return self.detail
         shallowest = self.base if table in NOT_IN_OVERVIEW else self.overview
         return max(shallowest, self.max - levels)
 
@@ -253,16 +270,25 @@ def read_collection(path: Path) -> list[dict]:
         return json.load(fh).get("features") or []
 
 
+Box = tuple[str, float, float, float, float]
+
+
+def tile_boxes(parent_tiles: Path, stems: set[str]) -> dict[str, Box]:
+    """Each rendered tile's CRS and square in it, from the plan."""
+    boxes: dict[str, Box] = {}
+    with parent_tiles.open(newline="") as fh:
+        for row in csv.DictReader(fh):
+            if row["tile"] in stems:
+                boxes[row["tile"]] = (row["crs"], *(float(row[k]) for k in ("min_x", "min_y", "max_x", "max_y")))
+    return boxes
+
+
 def footprints(parent_tiles: Path, stems: set[str]) -> list[dict]:
     """
     The rendered tiles' squares in WGS84, as `coverage` features. Densified, because a UTM square's
     edges are curves in longitude/latitude; two neighbours share their edge point for point.
     """
-    boxes: dict[str, tuple[str, float, float, float, float]] = {}
-    with parent_tiles.open(newline="") as fh:
-        for row in csv.DictReader(fh):
-            if row["tile"] in stems:
-                boxes[row["tile"]] = (row["crs"], *(float(row[k]) for k in ("min_x", "min_y", "max_x", "max_y")))
+    boxes = tile_boxes(parent_tiles, stems)
     features = []
     transformers: dict[str, pyproj.Transformer] = {}
     steps = 20
@@ -288,12 +314,74 @@ def footprints(parent_tiles: Path, stems: set[str]) -> list[dict]:
     return features
 
 
+def polygons(geometry: dict) -> list:
+    """The polygons of a Polygon or MultiPolygon, as lists of rings; nothing for other types."""
+    if geometry["type"] == "Polygon":
+        return [geometry["coordinates"]]
+    if geometry["type"] == "MultiPolygon":
+        return geometry["coordinates"]
+    return []
+
+
+class SmallAreas:
+    """
+    Which vegetation polygons are too small for the two shallowest zooms: under `min_px` pixels of
+    the parent's zoom, holes taken out. A pixel there is about 26 m at 47 deg N for a z11 parent.
+
+    A polygon that reaches its tile's edge is never small: it is the cut-off part of an area that
+    goes on in the neighbouring tile, and judging the part alone would bite notches out of a large
+    forest along every tile edge.
+    """
+
+    #: How close to its tile's edge a vertex counts as on it; karttapullautin crops on the edge,
+    #: and the output is rounded to 1e-7 deg, about a centimetre.
+    EDGE_M = 0.5
+
+    def __init__(self, min_px: float, zoom: int, boxes: dict[str, Box]):
+        self.min_px = min_px
+        self.world = 512 * 2**zoom
+        self.boxes = boxes
+        self.transformers: dict[str, pyproj.Transformer] = {}
+
+    def area_px(self, geometry: dict) -> float:
+        def ring_area(ring: list) -> float:
+            xs, ys = [], []
+            for lon, lat, *_ in ring:
+                xs.append((lon + 180) / 360 * self.world)
+                s = math.sin(math.radians(lat))
+                ys.append((0.5 - math.log((1 + s) / (1 - s)) / (4 * math.pi)) * self.world)
+            return abs(sum(xs[i] * ys[i + 1] - xs[i + 1] * ys[i] for i in range(len(xs) - 1))) / 2
+
+        return sum(ring_area(rings[0]) - sum(ring_area(h) for h in rings[1:])
+                   for rings in polygons(geometry) if rings)
+
+    def on_tile_edge(self, stem: str, geometry: dict) -> bool:
+        box = self.boxes.get(stem)
+        if box is None:
+            return True  # not known, so not judged
+        crs, x0, y0, x1, y1 = box
+        tr = self.transformers.setdefault(crs, pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True))
+        e = self.EDGE_M
+        for rings in polygons(geometry):
+            for ring in rings:
+                xs, ys = tr.transform([p[0] for p in ring], [p[1] for p in ring])
+                if any(x < x0 + e or x > x1 - e or y < y0 + e or y > y1 - e for x, y in zip(xs, ys)):
+                    return True
+        return False
+
+    def __call__(self, stem: str, geometry: dict) -> bool:
+        if self.min_px <= 0 or not polygons(geometry):
+            return False
+        return self.area_px(geometry) < self.min_px and not self.on_tile_edge(stem, geometry)
+
+
 def write_tables(
     files: list[tuple[str, Layer, Path]],
     coverage: list[dict],
     plan: ZoomPlan,
     classifier: Classifier,
     out_dir: Path,
+    small: SmallAreas | None = None,
 ) -> list[tuple[str, Path, int]]:
     """
     Sort every feature into its table, as newline-delimited GeoJSON with tippecanoe's per-feature
@@ -313,7 +401,7 @@ def write_tables(
     try:
         for feature in coverage:
             write("coverage", feature, plan.overview)
-        for _stem, layer, path in files:
+        for stem, layer, path in files:
             for feature in read_collection(path):
                 if not feature.get("geometry"):
                     continue
@@ -321,7 +409,10 @@ def write_tables(
                 properties = feature.setdefault("properties", {})
                 properties["isom_code"] = code
                 levels = layer.levels_of(str(properties.get("isom", "")))
-                write(table, feature, plan.minzoom(levels, table))
+                minzoom = plan.minzoom(levels, table)
+                if table == "vegetation_areas" and small and small(stem, feature["geometry"]):
+                    minzoom = max(minzoom, plan.detail)
+                write(table, feature, minzoom)
     finally:
         for fh in handles.values():
             fh.close()
@@ -395,6 +486,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--parent-tiles", type=Path, required=True,
                     help="parent_tiles.csv from plan_grids.py, for the tiles' footprints")
     ap.add_argument("--buffer", type=int, default=4, help="tile buffer in 1/256 of a tile")
+    ap.add_argument("--min-area-px", type=float, default=16,
+                    help="vegetation polygons smaller than this, in pixels of the parent's zoom, are "
+                         "left off the overview and the parent's zoom (0: keep all)")
     ap.add_argument("--work-dir", type=Path, default=Path("tables"))
     args = ap.parse_args(argv)
 
@@ -412,7 +506,8 @@ def main(argv: list[str] | None = None) -> int:
     stems = {stem for stem, _, _ in files}
     classifier = Classifier(read_crosswalk(args.crosswalk))
     plan = ZoomPlan(base=z, max=args.max_zoom)
-    tables = write_tables(files, footprints(args.parent_tiles, stems), plan, classifier, args.work_dir)
+    small = SmallAreas(args.min_area_px, z, tile_boxes(args.parent_tiles, stems))
+    tables = write_tables(files, footprints(args.parent_tiles, stems), plan, classifier, args.work_dir, small)
     print(f"{len(stems)} tile(s), {len(files)} file(s) -> {z}/{x}/{y}, z{plan.overview}..z{args.max_zoom}: "
           + ", ".join(f"{t} {n}" for t, _, n in tables))
     for code, n in sorted(classifier.unknown.items()):

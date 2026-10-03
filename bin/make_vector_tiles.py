@@ -47,8 +47,7 @@ import json
 import subprocess
 import math
 import sys
-from collections import Counter, defaultdict
-from collections.abc import Hashable
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -316,52 +315,24 @@ def polygons(geometry: dict) -> list:
     return []
 
 
-#: karttapullautin's outputs that hold vegetation areas, read twice: once to measure the patches.
-AREA_LAYERS = frozenset({"yellow", "vegetation", "undergrowth", "osm_areas"})
-
-#: A tile edge in a tile's CRS: (crs, "x" or "y", the coordinate), e.g. the line x = 594000.
-Line = tuple[str, str, float]
-
-
 class SmallAreas:
     """
-    The zoom a vegetation patch first appears at: the shallowest one it covers `min_px` pixels of,
+    The zoom a vegetation polygon first appears at: the shallowest one it covers `min_px` pixels of,
     holes taken out. The same size on screen at every zoom is a quarter of the ground area one zoom
-    deeper, so a zoom out drops more: with 16 px at 47 deg N, patches under ~4.3 ha at z10, ~1.1 ha
-    at z11, ~0.27 ha at z12 and ~0.07 ha at z13. Every patch is shown from SMALL_AREAS_FROM.
+    deeper, so a zoom out drops more: with 45 px at 47 deg N, polygons under ~12 ha at z10, ~3 ha at
+    z11, ~0.75 ha at z12 and ~0.19 ha at z13. Every polygon is shown from SMALL_AREAS_FROM.
 
-    A patch is measured whole, not per tile. karttapullautin crops each tile's polygons on the
-    tile's edge, so a forest across four tiles comes as four pieces, each cut along a stretch of a
-    shared edge. Pieces of one symbol whose cuts overlap on the same edge are one patch, and their
-    areas add up; judging each piece alone would bite notches out of the forest along every tile
-    edge. A patch cut on an edge with no tile of this parent behind it may go on where it cannot be
-    seen, so it is never judged small.
-
-    Two passes: `add` every polygon, then `first_zoom` for each.
+    Each polygon is judged on its own, as karttapullautin wrote it: a patch cut by a tile edge is
+    judged per piece, so its small piece may wait for a deeper zoom than the rest of it.
     """
 
-    #: How close to its tile's edge a vertex counts as on it; karttapullautin crops on the edge,
-    #: and the output is rounded to 1e-7 deg, about a centimetre.
-    EDGE_M = 0.5
-    #: How far two cuts on the same edge may miss each other and still join: the neighbours trace
-    #: their rasters independently, so a boundary crosses the edge at about, not exactly, one point.
-    JOIN_M = 2.0
-
-    def __init__(self, min_px: float, zoom: int, boxes: dict[str, Box]):
+    def __init__(self, min_px: float, zoom: int):
         self.min_px = min_px
         self.zoom = zoom
         self.world = 512 * 2**zoom
-        self.boxes = boxes
-        self.transformers: dict[str, pyproj.Transformer] = {}
-        self.inner: dict[str, tuple[float, float, float, float]] = {}
-        self.area: dict[Hashable, float] = {}
-        self.cuts: dict[tuple[Line, str], list[tuple[float, float, str, Hashable]]] = defaultdict(list)
-        self.parent: dict[Hashable, Hashable] = {}
-        self.unseen: set[Hashable] = set()  # may go on where this parent cannot see
-        self.resolved: dict[Hashable, int | None] | None = None
 
     def area_px(self, geometry: dict) -> float:
-        """The area in pixels of the parent's zoom; each zoom deeper has four times as many."""
+        """The area in pixels of `zoom`; each zoom deeper has four times as many."""
         def ring_area(ring: list) -> float:
             xs, ys = [], []
             for lon, lat, *_ in ring:
@@ -373,107 +344,14 @@ class SmallAreas:
         return sum(ring_area(rings[0]) - sum(ring_area(h) for h in rings[1:])
                    for rings in polygons(geometry) if rings)
 
-    def inner_lonlat(self, stem: str) -> tuple[float, float, float, float]:
-        """A lon/lat box inside the tile, 10 m clear of its edges: nothing in it is cut."""
-        if stem not in self.inner:
-            crs, x0, y0, x1, y1 = self.boxes[stem]
-            to_wgs84 = pyproj.Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-            lon, lat = to_wgs84.transform([x0 + 10, x1 - 10, x0 + 10, x1 - 10], [y0 + 10, y0 + 10, y1 - 10, y1 - 10])
-            self.inner[stem] = (max(lon[0], lon[2]), max(lat[0], lat[1]), min(lon[1], lon[3]), min(lat[2], lat[3]))
-        return self.inner[stem]
-
-    def edge_cuts(self, stem: str, geometry: dict) -> list[tuple[Line, float, float]]:
-        """The stretches of its tile's edge the polygon was cut along."""
-        w, s, e_, n = self.inner_lonlat(stem)
-        if all(w < p[0] < e_ and s < p[1] < n for rings in polygons(geometry) for p in rings[0]):
-            return []
-        crs, x0, y0, x1, y1 = self.boxes[stem]
-        tr = self.transformers.setdefault(crs, pyproj.Transformer.from_crs("EPSG:4326", crs, always_xy=True))
-        e = self.EDGE_M
-        sides = ((("x", x0), 0), (("x", x1), 0), (("y", y0), 1), (("y", y1), 1))
-        cuts = []
-        for rings in polygons(geometry):
-            for ring in rings:
-                pts = list(zip(*tr.transform([p[0] for p in ring], [p[1] for p in ring])))
-                for a, b in zip(pts, pts[1:]):
-                    for (axis, value), i in sides:
-                        if abs(a[i] - value) < e and abs(b[i] - value) < e:
-                            lo, hi = sorted((a[1 - i], b[1 - i]))
-                            cuts.append(((crs, axis, value), lo, hi))
-        return cuts
-
-    def add(self, key: Hashable, stem: str, symbol: str, geometry: dict) -> None:
+    def first_zoom(self, geometry: dict) -> int | None:
+        """The zoom the polygon covers `min_px` pixels from; None if it is not a polygon."""
         if self.min_px <= 0 or not polygons(geometry):
-            return
-        self.area[key] = self.area_px(geometry)
-        self.parent[key] = key
-        if stem not in self.boxes:
-            self.unseen.add(key)  # a tile without a footprint
-            return
-        for line, lo, hi in self.edge_cuts(stem, geometry):
-            self.cuts[(line, symbol)].append((lo, hi, stem, key))
-
-    def find(self, key: Hashable) -> Hashable:
-        while self.parent[key] != key:
-            self.parent[key] = self.parent[self.parent[key]]
-            key = self.parent[key]
-        return key
-
-    def union(self, a: Hashable, b: Hashable) -> None:
-        ra, rb = self.find(a), self.find(b)
-        if ra != rb:
-            self.parent[rb] = ra
-
-    def shared_edges(self) -> dict[Line, list[tuple[float, float]]]:
-        """Per edge line, the stretches with a tile of this parent on both sides."""
-        stretches: dict[Line, list[tuple[float, float, str]]] = defaultdict(list)
-        for stem, (crs, x0, y0, x1, y1) in self.boxes.items():
-            stretches[(crs, "x", x0)].append((y0, y1, stem))
-            stretches[(crs, "x", x1)].append((y0, y1, stem))
-            stretches[(crs, "y", y0)].append((x0, x1, stem))
-            stretches[(crs, "y", y1)].append((x0, x1, stem))
-        shared: dict[Line, list[tuple[float, float]]] = defaultdict(list)
-        for line, spans in stretches.items():
-            for i, (lo, hi, a) in enumerate(spans):
-                for lo2, hi2, b in spans[i + 1:]:
-                    if a != b and min(hi, hi2) > max(lo, lo2):
-                        shared[line].append((max(lo, lo2), min(hi, hi2)))
-        return shared
-
-    def resolve(self) -> None:
-        shared = self.shared_edges()
-        for (line, _symbol), cuts in self.cuts.items():
-            cuts.sort()
-            active: list[tuple[float, float, str, Hashable]] = []
-            for lo, hi, stem, key in cuts:
-                if not any(s_lo - self.EDGE_M <= lo and hi <= s_hi + self.EDGE_M for s_lo, s_hi in shared[line]):
-                    self.unseen.add(key)  # cut where no tile of this parent continues it
-                active = [c for c in active if c[1] + self.JOIN_M >= lo]
-                for _lo, _hi, other_stem, other in active:
-                    if other_stem != stem:
-                        self.union(key, other)
-                active.append((lo, hi, stem, key))
-        total: dict[Hashable, float] = defaultdict(float)
-        judged: dict[Hashable, bool] = {}
-        for key, area in self.area.items():
-            root = self.find(key)
-            total[root] += area
-            judged[root] = judged.get(root, True) and key not in self.unseen
-        self.resolved = {}
-        for key in self.area:
-            root = self.find(key)
-            zoom = None
-            if judged[root] and total[root] > 0:
-                zoom = self.zoom + max(-self.zoom, math.ceil(math.log(self.min_px / total[root], 4)))
-                if zoom <= self.zoom - 1:  # on the overview anyway
-                    zoom = None
-            self.resolved[key] = zoom
-
-    def first_zoom(self, key: Hashable) -> int | None:
-        """The zoom the patch covers `min_px` pixels from; None if its size does not matter."""
-        if self.resolved is None:
-            self.resolve()
-        return self.resolved.get(key)
+            return None
+        area = self.area_px(geometry)
+        if area <= 0:
+            return None
+        return self.zoom + max(-self.zoom, math.ceil(math.log(self.min_px / area, 4)))
 
 
 def write_tables(
@@ -499,18 +377,11 @@ def write_tables(
         handles[table].write(json.dumps(feature, separators=(",", ":")) + "\n")
         counts[table] += 1
 
-    if small:
-        for stem, layer, path in files:
-            if layer.name in AREA_LAYERS:
-                for i, feature in enumerate(read_collection(path)):
-                    if feature.get("geometry") and classifier.classify(layer, feature)[0] == "vegetation_areas":
-                        symbol = f"{layer.name}:{feature.get('properties', {}).get('isom', '')}"
-                        small.add((stem, layer.name, i), stem, symbol, feature["geometry"])
     try:
         for feature in coverage:
             write("coverage", feature, plan.overview)
-        for stem, layer, path in files:
-            for i, feature in enumerate(read_collection(path)):
+        for _stem, layer, path in files:
+            for feature in read_collection(path):
                 if not feature.get("geometry"):
                     continue
                 table, code = classifier.classify(layer, feature)
@@ -519,7 +390,7 @@ def write_tables(
                 shown_from = layer.shown_from_of(str(properties.get("isom", "")))
                 minzoom = plan.minzoom(shown_from, table)
                 if table == "vegetation_areas" and small:
-                    first = small.first_zoom((stem, layer.name, i))
+                    first = small.first_zoom(feature["geometry"])
                     if first is not None:
                         minzoom = max(minzoom, min(first, plan.minzoom(SMALL_AREAS_FROM, table)))
                 write(table, feature, minzoom)
@@ -596,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--parent-tiles", type=Path, required=True,
                     help="parent_tiles.csv from plan_grids.py, for the tiles' footprints")
     ap.add_argument("--buffer", type=int, default=4, help="tile buffer in 1/256 of a tile")
-    ap.add_argument("--min-area-px", type=float, default=16,
+    ap.add_argument("--min-area-px", type=float, default=45,
                     help="a vegetation polygon is shown from the zoom it covers this many pixels at, and "
                          "from SMALL_AREAS_FROM whatever its size (0: at every zoom)")
     ap.add_argument("--work-dir", type=Path, default=Path("tables"))
@@ -616,7 +487,7 @@ def main(argv: list[str] | None = None) -> int:
     stems = {stem for stem, _, _ in files}
     classifier = Classifier(read_crosswalk(args.crosswalk))
     plan = ZoomPlan(base=z, max=args.max_zoom)
-    small = SmallAreas(args.min_area_px, z, tile_boxes(args.parent_tiles, stems))
+    small = SmallAreas(args.min_area_px, z)
     tables = write_tables(files, footprints(args.parent_tiles, stems), plan, classifier, args.work_dir, small)
     print(f"{len(stems)} tile(s), {len(files)} file(s) -> {z}/{x}/{y}, z{plan.overview}..z{args.max_zoom}: "
           + ", ".join(f"{t} {n}" for t, _, n in tables))

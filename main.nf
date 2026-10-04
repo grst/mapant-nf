@@ -2,8 +2,8 @@
 /*
  * mapant -- generate a web-mercator vector map (PMTiles) from a list of LiDAR tiles.
  *
- * Give it a CSV of laz tiles (url, checksum, bbox, CRS, optionally the karttapullautin ini each is
- * rendered with), an OSM extract and a default karttapullautin configuration, and it produces the
+ * Give it a CSV of laz tiles (url, size, bbox, CRS, optionally a checksum and the karttapullautin ini
+ * each is rendered with), an OSM extract and a default karttapullautin configuration, and it produces the
  * map as one PMTiles archive of vector tiles, with the style that draws them. Nothing here is
  * specific to Bavaria; the input contract is assets/schema_tiles.json.
  *

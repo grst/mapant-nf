@@ -140,7 +140,8 @@ directory -- but it stages a few hundred archives, never the tiles. Four things 
 The scale is what shapes everything: 15+ TB of input, ~72,000 tiles, ~3,000 CPU-hours. Nothing may be
 downloaded up front and no intermediate may outlive the task that made it.
 
-**`PULLAUTA_GRID` is deliberately one process** that downloads, checksums, renders and deletes. Its
+**`PULLAUTA_GRID` is deliberately one process** that downloads, verifies (size always, sha256 when
+the samplesheet has one; a `.zip` tile is unpacked from `zips/` into `in/`), renders and deletes. Its
 `trap` removes karttapullautin's temporaries before the task ends — karttapullautin never cleans up
 after itself, and `savetempfiles`/`savetempfolders` control extra *outputs*, not cleanup. Without the
 trap a failed grid strands ~30 GB, because Nextflow keeps a failed task's directory.

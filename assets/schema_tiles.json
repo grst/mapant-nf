@@ -12,8 +12,8 @@
         "properties": {
             "tile": {
                 "type": "string",
-                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]*\\.(laz|las|LAZ|LAS)$",
-                "errorMessage": "`tile` must be a bare .laz/.las filename with no directory component; it is used verbatim as the filename inside karttapullautin's input folder and as the stem of the rendered PNG."
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+-]*\\.(laz|las|zip|LAZ|LAS|ZIP)$",
+                "errorMessage": "`tile` must be a bare .laz/.las/.zip filename with no directory component; it is the name the download is saved under, and its stem names the file in karttapullautin's input folder and the rendered tile. A .zip must hold exactly one .laz/.las file (other members are ignored); it is unpacked after download, and size_bytes/sha256 describe the .zip."
             },
             "url": {
                 "type": "string",
@@ -28,8 +28,8 @@
             },
             "sha256": {
                 "type": "string",
-                "pattern": "^[0-9a-fA-F]{64}$",
-                "errorMessage": "`sha256` must be 64 hex characters. Checksums are mandatory: a silently truncated laz renders as a hole in the map rather than as an error."
+                "pattern": "^([0-9a-fA-F]{64})?$",
+                "errorMessage": "`sha256` is optional; when given it must be 64 hex characters. A file without one is checked by size only (and a .zip by its CRC-32s as well), which still catches a truncated download -- the common failure, and one karttapullautin would render as a plausible but wrong map rather than report -- but not a corrupt file of the right size."
             },
             "crs": {
                 "type": "string",
@@ -61,7 +61,6 @@
             "tile",
             "url",
             "size_bytes",
-            "sha256",
             "crs",
             "min_x",
             "min_y",

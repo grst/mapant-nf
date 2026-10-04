@@ -53,7 +53,6 @@ REQUIRED_COLUMNS = (
     "tile",
     "url",
     "size_bytes",
-    "sha256",
     "crs",
     "min_x",
     "min_y",
@@ -138,7 +137,8 @@ def read_tiles(path: Path, default_ini: str = "") -> list[Tile]:
                 t = Tile(
                     tile=row["tile"].strip(),
                     url=row["url"].strip(),
-                    sha256=row["sha256"].strip().lower(),
+                    # Optional, as a column and per row: empty means fetch_laz.py checks the size only.
+                    sha256=(row.get("sha256") or "").strip().lower(),
                     size_bytes=int(row["size_bytes"]),
                     crs=row["crs"].strip(),
                     min_x=float(row["min_x"]),
@@ -161,6 +161,15 @@ def read_tiles(path: Path, default_ini: str = "") -> list[Tile]:
 
     if not tiles:
         raise PlanError(f"{path} has a header but no data rows")
+    # Everything downstream -- the file in karttapullautin's input folder, the rendered tile, the
+    # bundle -- is named by the stem, so `a.laz` and `a.zip` would overwrite each other.
+    stems = Counter(Path(t.tile).stem for t in tiles)
+    clashes = sorted(s for s, n in stems.items() if n > 1)
+    if clashes:
+        raise PlanError(
+            f"{path}: {len(clashes)} tile name(s) differ only in their extension, e.g. "
+            f"{', '.join(t.tile for t in tiles if Path(t.tile).stem == clashes[0])}"
+        )
     return tiles
 
 

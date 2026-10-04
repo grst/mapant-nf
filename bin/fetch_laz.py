@@ -2,9 +2,15 @@
 """
 Acquire every laz file a grid needs into ./in, and prove each one arrived intact.
 
-Checksums are not optional here. A truncated laz does not make karttapullautin fail -- it renders
-whatever points it managed to read, so the damage surfaces as a plausible but wrong map tile. So
-every file is verified on every attempt, however it arrived.
+A truncated laz does not make karttapullautin fail -- it renders whatever points it managed to read,
+so the damage surfaces as a plausible but wrong map tile. So every file is verified on every attempt,
+however it arrived: by size always, and by sha256 where the CSV has one. Few sources publish
+checksums, and the size alone catches the common case, a transfer cut short.
+
+A tile may be a .zip holding one .laz/.las, the way several sources serve them. It is downloaded
+next to ./in rather than into it -- karttapullautin unzips any archive in its input folder itself --
+verified as above, unpacked to `in/<stem>.<laz|las>` and deleted. Unpacking checks each member's
+CRC-32, which covers the laz inside even when the CSV has no checksum for the archive.
 
 Exit status is a contract, because Nextflow's retry logic depends on telling "this will never work"
 apart from "the network had a bad minute":
@@ -28,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -42,7 +49,7 @@ def log(message: str) -> None:
 
 
 def verify(path: Path, size: int, sha256: str) -> str | None:
-    """Return None if the file matches, else a description of the mismatch."""
+    """Return None if the file matches, else a description of the mismatch. No sha256, no hashing."""
     if not path.is_file():
         return "missing"
     # Size first: it is free, and it catches the common truncation case without hashing hundreds of
@@ -50,12 +57,46 @@ def verify(path: Path, size: int, sha256: str) -> str | None:
     actual_size = path.stat().st_size
     if actual_size != size:
         return f"size mismatch (expected {size}, got {actual_size})"
+    if not sha256:
+        return None
     digest = hashlib.sha256()
     with path.open("rb") as fh:
         while chunk := fh.read(4 << 20):
             digest.update(chunk)
     if digest.hexdigest() != sha256:
         return f"sha256 mismatch (expected {sha256}, got {digest.hexdigest()})"
+    return None
+
+
+def is_zip(tile: str) -> bool:
+    return tile.lower().endswith(".zip")
+
+
+def unpack(archive: Path, outdir: Path) -> str | None:
+    """
+    Extract the one .laz/.las in `archive` as `<outdir>/<archive stem>.<laz|las>`. Return None on
+    success, else a description of what is wrong with the archive.
+
+    Renamed to the archive's stem because the rest of the pipeline knows a tile only by the stem of
+    its `tile` column; whatever the member is called inside is the source's business.
+    """
+    try:
+        with zipfile.ZipFile(archive) as zf:
+            members = [m for m in zf.infolist()
+                       if not m.is_dir() and Path(m.filename).suffix.lower() in (".laz", ".las")]
+            if len(members) != 1:
+                return (f"archive holds {len(members)} .laz/.las files, expected exactly one: "
+                        f"{', '.join(m.filename for m in members) or 'none'}")
+            dest = outdir / (archive.stem + Path(members[0].filename).suffix.lower())
+            part = dest.with_name(dest.name + ".part")
+            # Reading a member to the end checks its CRC-32 and raises BadZipFile on a mismatch.
+            with zf.open(members[0]) as src, part.open("wb") as dst:
+                shutil.copyfileobj(src, dst, 4 << 20)
+            part.replace(dest)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, EOFError, NotImplementedError) as exc:
+        for leftover in outdir.glob(f"{archive.stem}.*.part"):
+            leftover.unlink()
+        return f"unreadable archive ({exc})"
     return None
 
 
@@ -83,11 +124,14 @@ def fetch_one(row: dict[str, str], args: argparse.Namespace) -> tuple[str, str]:
 
     Outcome is 'ok', 'permanent' (no retry can help) or 'transient' (the grid should be retried).
     """
-    tile, size, sha = row["tile"], int(row["size_bytes"]), row["sha256"].lower()
-    dest = args.outdir / tile
+    tile, size, sha = row["tile"], int(row["size_bytes"]), (row.get("sha256") or "").lower()
+    archive = is_zip(tile)
+    # An archive lands outside ./in: karttapullautin would try to unzip it as a shapefile set.
+    dest = (args.zipdir if archive else args.outdir) / tile
 
-    # Already there and intact? That happens on a Nextflow retry of the same task.
-    if dest.exists() and verify(dest, size, sha) is None:
+    # Already there and intact? That happens on a Nextflow retry of the same task. An unpacked laz
+    # cannot be checked against the archive's size and checksum, so an archive is fetched again.
+    if not archive and dest.exists() and verify(dest, size, sha) is None:
         return "ok", "cached"
     dest.unlink(missing_ok=True)
 
@@ -108,6 +152,11 @@ def fetch_one(row: dict[str, str], args: argparse.Namespace) -> tuple[str, str]:
         if status == 0:
             part.replace(dest)
             problem = verify(dest, size, sha)
+            if problem is None and archive:
+                problem = unpack(dest, args.outdir)
+                dest.unlink()
+                if problem is None:
+                    return "ok", "downloaded and unpacked"
             if problem is None:
                 return "ok", "downloaded"
             # One more try -- a truncated transfer happens -- but if the server keeps handing us the
@@ -157,6 +206,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--csv", type=Path, required=True, help="a grid CSV from PLAN_GRIDS")
     ap.add_argument("--outdir", type=Path, default=Path("in"))
+    ap.add_argument("--zipdir", type=Path, default=Path("zips"),
+                    help="where .zip tiles are downloaded before unpacking; never inside --outdir")
     ap.add_argument("--failures", type=Path, default=Path("download_failures.tsv"))
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--retries", type=int, default=3)
@@ -166,7 +217,12 @@ def main(argv: list[str] | None = None) -> int:
     with args.csv.open(newline="") as fh:
         rows = list(csv.DictReader(fh))
     args.outdir.mkdir(parents=True, exist_ok=True)
+    if any(is_zip(r["tile"]) for r in rows):
+        args.zipdir.mkdir(parents=True, exist_ok=True)
     check_free_space(rows)
+    unhashed = sum(1 for r in rows if not (r.get("sha256") or "").strip())
+    if unhashed:
+        log(f"{unhashed} of {len(rows)} file(s) have no sha256 in the CSV; checking their size only")
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         results = list(pool.map(lambda row: fetch_one(row, args), rows))

@@ -439,10 +439,30 @@ def test_degenerate_bbox_is_rejected(tmp_path):
 
 def test_missing_required_column_names_what_is_missing(tmp_path):
     rows = [tile_row(1, 1)]
-    del rows[0]["sha256"]
-    csv_path = write_csv(tmp_path / "t.csv", rows, [c for c in TILE_COLUMNS if c != "sha256"])
-    with pytest.raises(pg.PlanError, match="sha256"):
+    del rows[0]["size_bytes"]
+    csv_path = write_csv(tmp_path / "t.csv", rows, [c for c in TILE_COLUMNS if c != "size_bytes"])
+    with pytest.raises(pg.PlanError, match="size_bytes"):
         pg.read_tiles(csv_path)
+
+
+def test_sha256_is_optional_as_a_column_and_per_row(tmp_path):
+    """Few sources publish checksums: no column, or an empty cell, means fetch_laz checks size only."""
+    rows = [tile_row(1, 1), tile_row(1, 2, sha256="")]
+    tiles = pg.read_tiles(write_csv(tmp_path / "with.csv", rows, TILE_COLUMNS))
+    assert [t.sha256 for t in tiles] == ["a" * 64, ""]
+
+    for r in rows:
+        del r["sha256"]
+    columns = [c for c in TILE_COLUMNS if c != "sha256"]
+    tiles = pg.read_tiles(write_csv(tmp_path / "without.csv", rows, columns))
+    assert [t.sha256 for t in tiles] == ["", ""]
+
+
+def test_tile_names_differing_only_in_extension_are_rejected(tmp_path):
+    """Everything downstream is named by the stem, so a.laz and a.zip would overwrite each other."""
+    rows = [tile_row(1, 1), tile_row(1, 2, tile="1_1.zip")]
+    with pytest.raises(pg.PlanError, match="1_1.laz, 1_1.zip"):
+        pg.read_tiles(write_csv(tmp_path / "t.csv", rows, TILE_COLUMNS))
 
 
 def test_region_filter_selecting_nothing_is_an_error():
@@ -519,6 +539,30 @@ def test_schema_accepts_a_local_path_instead_of_a_url():
 
 
 @pytest.mark.parametrize(
+    "variant",
+    [
+        pytest.param({"sha256": ""}, id="empty-sha256"),
+        pytest.param({"sha256": None}, id="no-sha256"),
+        pytest.param({"tile": "lsc_33430_5640_2_sn_laz.zip"}, id="zip-tile"),
+    ],
+)
+def test_schema_accepts_optional_checksums_and_zip_tiles(variant):
+    row = {
+        "tile": "a.laz",
+        "url": "https://example.invalid/a.laz",
+        "size_bytes": 1,
+        "sha256": "f" * 64,
+        "crs": "EPSG:25833",
+        "min_x": 0,
+        "min_y": 0,
+        "max_x": 1,
+        "max_y": 1,
+    }
+    row.update(variant)
+    _validate_row({k: v for k, v in row.items() if v is not None})
+
+
+@pytest.mark.parametrize(
     "bad",
     [
         pytest.param({"sha256": "abc"}, id="short-sha256"),
@@ -528,6 +572,7 @@ def test_schema_accepts_a_local_path_instead_of_a_url():
         pytest.param({"crs": "25832"}, id="crs-without-epsg-prefix"),
         pytest.param({"tile": "sub/dir/a.laz"}, id="tile-with-directory"),
         pytest.param({"tile": "a.tif"}, id="tile-wrong-extension"),
+        pytest.param({"tile": "a.tar.gz"}, id="tile-unsupported-archive"),
         pytest.param({"url": "ftp://example.invalid/a.laz"}, id="unsupported-url-scheme"),
     ],
 )

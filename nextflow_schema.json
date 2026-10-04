@@ -20,7 +20,7 @@
                     "mimetype": "text/csv",
                     "schema": "assets/schema_tiles.json",
                     "description": "CSV listing the LiDAR tiles to process.",
-                    "help_text": "One row per .laz/.las file with its URL, size, sha256, CRS and projected bounding box. This file is the pipeline's input contract; see assets/schema_tiles.json for the full column list. Any region or country can be processed by producing a CSV that satisfies it."
+                    "help_text": "One row per .laz/.las file -- or per .zip holding one, which is unpacked after download -- with its URL, size, optionally its sha256, CRS and projected bounding box. This file is the pipeline's input contract; see assets/schema_tiles.json for the full column list. Any region or country can be processed by producing a CSV that satisfies it."
                 },
                 "osm_pbf": {
                     "type": "string",

@@ -40,7 +40,7 @@ process PULLAUTA_GRID {
     # extra *outputs*, not cleanup. A trap rather than a plain rm at the end, because Nextflow keeps
     # the task directory when a task fails or is retried: without this, one failed grid strands
     # ~30 GB. The declared outputs live in out/ and are untouched here.
-    trap 'rm -rf in temp temp[0-9]* ./*.xyz.bin pullautus*.png pullautus*.pgw temp_shapefiles' EXIT
+    trap 'rm -rf in zips temp temp[0-9]* ./*.xyz.bin pullautus*.png pullautus*.pgw temp_shapefiles' EXIT
 
     # karttapullautin's `processes` setting bounds only its tile workers: `image` and `imageproc` are
     # built with rayon and size their thread pools from the machine's core count, which measured 677%
@@ -49,7 +49,7 @@ process PULLAUTA_GRID {
     export RAYON_NUM_THREADS=${task.cpus}
 
     # Exits non-zero only for failures a retry could fix, so a 404 becomes a recorded hole while a
-    # timeout becomes a Nextflow retry.
+    # timeout becomes a Nextflow retry. A .zip tile is downloaded to zips/ and unpacked into in/.
     fetch_laz.py \\
         --csv ${grid_csv} \\
         --outdir in \\
@@ -76,7 +76,7 @@ process PULLAUTA_GRID {
     stub:
     """
     mkdir -p out
-    awk -F, 'NR > 1 && \$5 == "core" { sub(/\\.la[sz]\$/, "", \$1); print \$1 }' ${grid_csv} \\
+    awk -F, 'NR > 1 && \$5 == "core" { sub(/\\.(la[sz]|zip)\$/, "", \$1); print \$1 }' ${grid_csv} \\
         | while read -r stem; do
               mkdir -p "out/\${stem}_vec"
               for layer in contours vegetation osm_lines; do

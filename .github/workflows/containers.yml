@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       images:
-        description: 'Images to consider: "all" or a space-separated subset (karttapullautin gdal osmium k2t)'
+        description: 'Images to consider: "all" or a space-separated subset (karttapullautin gdal osmium tiler)'
         required: false
         default: 'all'
       force:

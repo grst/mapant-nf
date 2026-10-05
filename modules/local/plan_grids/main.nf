@@ -11,6 +11,7 @@ process PLAN_GRIDS {
     output:
     path 'grids/*.csv', emit: grid_csvs
     path 'grids.csv', emit: grid_index
+    path 'inis.csv', emit: ini_index
     path 'parent_tiles.csv', emit: parent_index
     path 'osm_chunks/*.json', emit: osm_chunks
     path 'plan_summary.txt', emit: summary
@@ -24,6 +25,7 @@ process PLAN_GRIDS {
         --tiles-csv ${tiles_csv} \\
         --outdir . \\
         --grid-size ${params.grid_size} \\
+        --default-ini '${params.pullauta_ini}' \\
         --base-zoom ${params.base_zoom} \\
         --osm-buffer-m ${params.osm_buffer_m} \\
         --osm-chunk-size ${params.osm_chunk_size} \\

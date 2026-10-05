@@ -247,8 +247,74 @@ def test_grid_ids_are_stable_when_the_region_filter_changes():
         }, f"{grid_id} changed membership; every task in it would re-run"
 
 
-def test_grid_id_encodes_the_epsg_code():
-    assert pg.grid_id_for("EPSG:25832", 590, 5268, 2) == "grid_25832_295_2634"
+def test_grid_id_encodes_the_epsg_code_and_the_configuration():
+    assert pg.grid_id_for("EPSG:25832", 590, 5268, 2, "las14") == "grid_25832_295_2634_las14"
+
+
+# ---------------------------------------------------------------------------
+# configurations: one ini per tile, from the samplesheet
+# ---------------------------------------------------------------------------
+def test_the_samplesheet_ini_takes_precedence_over_the_default(tmp_path):
+    rows = [
+        tile_row(1, 1, pullauta_ini="conf/las12.ini"),
+        tile_row(1, 2, pullauta_ini=""),
+        tile_row(2, 1, pullauta_ini="  conf/las14.ini "),
+    ]
+    csv_path = write_csv(tmp_path / "t.csv", rows, [*TILE_COLUMNS, "pullauta_ini"])
+    tiles = pg.read_tiles(csv_path, "/pipeline/assets/pullauta.ini")
+    assert [t.ini for t in tiles] == ["conf/las12.ini", "/pipeline/assets/pullauta.ini", "conf/las14.ini"]
+    # and without the column at all, every tile gets the default
+    plain = write_csv(tmp_path / "p.csv", [tile_row(1, 1)], TILE_COLUMNS)
+    assert pg.read_tiles(plain, "default.ini")[0].ini == "default.ini"
+
+
+def test_ini_ids_are_short_safe_and_independent_of_row_order():
+    tiles = lattice(range(0, 3), range(0, 1))
+    tiles[0].ini, tiles[1].ini, tiles[2].ini = "b/pullauta.las14.ini", "a/pullauta.las14.ini", "x y.ini"
+    ids = pg.ini_ids(tiles)
+    assert ids == {
+        "a/pullauta.las14.ini": "pullauta_las14",
+        "b/pullauta.las14.ini": "pullauta_las14_2",
+        "x y.ini": "x_y",
+    }
+    assert pg.ini_ids(list(reversed(tiles))) == ids
+
+
+def test_a_block_with_two_configurations_is_two_grids_with_the_same_halo_pool():
+    """
+    Each grid renders its own tiles with its own ini; the tiles of the other configuration in the
+    same block are halo to it, because points are points whatever renders them.
+    """
+    pool = lattice(range(0, 6), range(0, 6))
+    for t in pool:
+        t.ini = "las12.ini" if t.min_x < 3000 else "las14.ini"
+    core = [t for t in pool if 2000 <= t.min_x < 4000 and 2000 <= t.min_y < 4000]
+    grids = pg.build_grids(core, pool, crs="EPSG:25832", grid_size=2)
+
+    assert sorted(grids) == ["grid_25832_1_1_las12", "grid_25832_1_1_las14"]
+    las12, las14 = grids["grid_25832_1_1_las12"], grids["grid_25832_1_1_las14"]
+    assert {t.tile for t in las12["core"]} == {"2_2.laz", "2_3.laz"}
+    assert {t.tile for t in las14["core"]} == {"3_2.laz", "3_3.laz"}
+    # the las14 tiles next door are in the las12 grid's halo, and the other way round
+    assert {"3_2.laz", "3_3.laz"} <= {t.tile for t in las12["halo"]}
+    assert {"2_2.laz", "2_3.laz"} <= {t.tile for t in las14["halo"]}
+
+
+def test_the_plan_lists_each_configuration_and_its_grids(tmp_path):
+    rows = [tile_row(ix, iy, pullauta_ini="a.ini" if ix < 2 else "") for ix in range(0, 4) for iy in range(0, 2)]
+    csv_path = write_csv(tmp_path / "t.csv", rows, [*TILE_COLUMNS, "pullauta_ini"])
+    out = tmp_path / "out"
+    assert pg.main(["--tiles-csv", str(csv_path), "--outdir", str(out), "--grid-size", "4",
+                    "--default-ini", "/p/b.ini", "--base-zoom", "13"]) == 0
+
+    import csv
+
+    inis = list(csv.DictReader((out / "inis.csv").open()))
+    assert [(r["ini_id"], r["path"], r["n_tiles"]) for r in inis] == [("a", "a.ini", "4"), ("b", "/p/b.ini", "4")]
+    grids = {r["grid_id"]: r["ini_id"] for r in csv.DictReader((out / "grids.csv").open())}
+    assert sorted(grids.values()) == ["a", "b"]
+    parents = list(csv.DictReader((out / "parent_tiles.csv").open()))
+    assert {"min_x", "min_y", "max_x", "max_y"} <= set(parents[0])
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +341,8 @@ def test_derived_envelope_never_undercuts_a_four_corner_transform():
     """
     A UTM box's edges are curves in lon/lat, so transforming only the corners can *under*-estimate
     the envelope. A tile would then be assigned to too few web-mercator parents and the map would
-    have thin missing slivers. This is the mistake k2t's own list_tiles makes, and the reason the
-    parent map is computed here instead.
+    have thin missing slivers. It is a mistake that has been made by a tiler this pipeline used, and
+    the reason the parent map is computed here instead.
 
     For a 1 km tile the two agree to within floating point -- the curvature is negligible at that
     size, which is worth knowing rather than assuming. The property that must hold at every size
@@ -373,10 +439,46 @@ def test_degenerate_bbox_is_rejected(tmp_path):
 
 def test_missing_required_column_names_what_is_missing(tmp_path):
     rows = [tile_row(1, 1)]
-    del rows[0]["sha256"]
-    csv_path = write_csv(tmp_path / "t.csv", rows, [c for c in TILE_COLUMNS if c != "sha256"])
-    with pytest.raises(pg.PlanError, match="sha256"):
+    del rows[0]["crs"]
+    csv_path = write_csv(tmp_path / "t.csv", rows, [c for c in TILE_COLUMNS if c != "crs"])
+    with pytest.raises(pg.PlanError, match="crs"):
         pg.read_tiles(csv_path)
+
+
+def test_size_is_optional_and_a_plan_without_any_still_summarises(tmp_path):
+    rows = [tile_row(ix, iy, size_bytes="") for ix in range(2) for iy in range(2)]
+    columns = [c for c in TILE_COLUMNS if c != "size_bytes"]
+    for r in rows:
+        del r["size_bytes"]
+    csv_path = write_csv(tmp_path / "t.csv", rows, columns)
+    assert [t.size_bytes for t in pg.read_tiles(csv_path)] == [0] * 4
+
+    out = tmp_path / "plan"
+    out.mkdir()
+    assert pg.main(["--tiles-csv", str(csv_path), "--outdir", str(out), "--grid-size", "2"]) == 0
+    assert "4 file(s) without size_bytes" in (out / "plan_summary.txt").read_text()
+    grid_csv = next((out / "grids").glob("*.csv")).read_text().splitlines()
+    assert grid_csv[1].split(",")[3] == ""  # size_bytes, left empty rather than invented
+
+
+def test_sha256_is_optional_as_a_column_and_per_row(tmp_path):
+    """Few sources publish checksums: no column, or an empty cell, means fetch_laz checks size only."""
+    rows = [tile_row(1, 1), tile_row(1, 2, sha256="")]
+    tiles = pg.read_tiles(write_csv(tmp_path / "with.csv", rows, TILE_COLUMNS))
+    assert [t.sha256 for t in tiles] == ["a" * 64, ""]
+
+    for r in rows:
+        del r["sha256"]
+    columns = [c for c in TILE_COLUMNS if c != "sha256"]
+    tiles = pg.read_tiles(write_csv(tmp_path / "without.csv", rows, columns))
+    assert [t.sha256 for t in tiles] == ["", ""]
+
+
+def test_tile_names_differing_only_in_extension_are_rejected(tmp_path):
+    """Everything downstream is named by the stem, so a.laz and a.zip would overwrite each other."""
+    rows = [tile_row(1, 1), tile_row(1, 2, tile="1_1.zip")]
+    with pytest.raises(pg.PlanError, match="1_1.laz, 1_1.zip"):
+        pg.read_tiles(write_csv(tmp_path / "t.csv", rows, TILE_COLUMNS))
 
 
 def test_region_filter_selecting_nothing_is_an_error():
@@ -453,15 +555,45 @@ def test_schema_accepts_a_local_path_instead_of_a_url():
 
 
 @pytest.mark.parametrize(
+    "variant",
+    [
+        pytest.param({"sha256": ""}, id="empty-sha256"),
+        pytest.param({"sha256": None}, id="no-sha256"),
+        pytest.param({"tile": "lsc_33430_5640_2_sn_laz.zip"}, id="zip-tile"),
+        pytest.param({"sha256": "sha1:" + "a" * 40}, id="sha1-prefixed"),
+        pytest.param({"sha256": "sha256:" + "a" * 64}, id="sha256-prefixed"),
+        pytest.param({"size_bytes": None}, id="no-size"),
+    ],
+)
+def test_schema_accepts_optional_checksums_and_zip_tiles(variant):
+    row = {
+        "tile": "a.laz",
+        "url": "https://example.invalid/a.laz",
+        "size_bytes": 1,
+        "sha256": "f" * 64,
+        "crs": "EPSG:25833",
+        "min_x": 0,
+        "min_y": 0,
+        "max_x": 1,
+        "max_y": 1,
+    }
+    row.update(variant)
+    _validate_row({k: v for k, v in row.items() if v is not None})
+
+
+@pytest.mark.parametrize(
     "bad",
     [
         pytest.param({"sha256": "abc"}, id="short-sha256"),
         pytest.param({"sha256": "z" * 64}, id="non-hex-sha256"),
+        pytest.param({"sha256": "sha1:" + "a" * 64}, id="sha1-of-sha256-length"),
+        pytest.param({"sha256": "md5:" + "a" * 32}, id="unsupported-algorithm"),
         pytest.param({"size_bytes": 0}, id="zero-size"),
         pytest.param({"size_bytes": -5}, id="negative-size"),
         pytest.param({"crs": "25832"}, id="crs-without-epsg-prefix"),
         pytest.param({"tile": "sub/dir/a.laz"}, id="tile-with-directory"),
         pytest.param({"tile": "a.tif"}, id="tile-wrong-extension"),
+        pytest.param({"tile": "a.tar.gz"}, id="tile-unsupported-archive"),
         pytest.param({"url": "ftp://example.invalid/a.laz"}, id="unsupported-url-scheme"),
     ],
 )

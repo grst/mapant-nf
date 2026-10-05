@@ -1,40 +1,46 @@
-// Download a grid's laz files, verify them, render the core tiles, and leave nothing behind but the
-// PNGs.
+// Download a grid's laz files, verify them, render the core tiles, and leave nothing behind but
+// each tile's vector bundle.
 //
 // Deliberately one process: the input for Bavaria is 15+ TB, so the laz files cannot be staged as
 // Nextflow inputs and must not outlive the task that uses them.
+//
+// The grid's OSM archive goes in with the laz files: karttapullautin matches the shapes to their
+// ISOM codes itself and writes them, cropped per tile, next to the LiDAR vectors, so the bundle is
+// the whole map for that square kilometre.
 process PULLAUTA_GRID {
     tag "${grid_id}"
     label 'process_pullauta'
 
     input:
-    tuple val(grid_id), path(grid_csv), path(shapes_zip)
-    path effective_ini
+    tuple val(grid_id), path(grid_csv), path(shapes_zip), path(effective_ini)
     // Pinned to the name RENDER_INI writes into the ini's `vectorconf` key, so a user's shape
     // mapping file can be called anything.
     path(vectorconf, stageAs: 'osm.txt')
 
     output:
-    tuple val(grid_id),
-          path('out/*.png', arity: '1..*'),
-          path('out/*.pgw', arity: '1..*'), emit: rendered, optional: true
     path "failures.${grid_id}.tsv", emit: failures
     path "pullauta.${grid_id}.log", emit: log
     path "download_failures.${grid_id}.tsv", emit: download_failures
+    // One directory per rendered core tile, holding its per-layer GeoJSON. A single path per tile
+    // rather than nine globs, so the fan-in to MAKE_VECTOR_TILES is one path per
+    // tile. Optional: a grid every one of whose tiles failed produces none.
+    tuple val(grid_id), path('out/*_vec', type: 'dir'), emit: vectors, optional: true
 
     script:
     def limit_rate = params.download_limit_rate ? "--limit-rate '${params.download_limit_rate}'" : ''
     // karttapullautin looks for *.zip in its lazfolder and unzips them itself; there is no separate
-    // option for the shapefile set.
-    def stage_shapes = shapes_zip.name == 'NONE'
-        ? "echo 'no OSM shapes for this grid; rendering contours and vegetation only' >&2"
-        : "cp -L ${shapes_zip} in/map.shp.zip"
+    // option for the shapefile set. Anything but an archive is a sentinel -- assets/NONE when the
+    // run has no OSM, <grid>.NONE when the grid's extract held nothing drawable -- and staging it
+    // would hand karttapullautin a text file to unzip.
+    def stage_shapes = shapes_zip.name.endsWith('.shp.zip')
+        ? "cp -L ${shapes_zip} in/map.shp.zip"
+        : "echo 'no OSM shapes for this grid; rendering the LiDAR only' >&2"
     """
     # karttapullautin never deletes its own temporaries -- savetempfiles/savetempfolders control
     # extra *outputs*, not cleanup. A trap rather than a plain rm at the end, because Nextflow keeps
     # the task directory when a task fails or is retried: without this, one failed grid strands
     # ~30 GB. The declared outputs live in out/ and are untouched here.
-    trap 'rm -rf in temp temp[0-9]* ./*.xyz.bin pullautus*.png pullautus*.pgw temp_shapefiles' EXIT
+    trap 'rm -rf in zips temp temp[0-9]* ./*.xyz.bin pullautus*.png pullautus*.pgw temp_shapefiles' EXIT
 
     # karttapullautin's `processes` setting bounds only its tile workers: `image` and `imageproc` are
     # built with rayon and size their thread pools from the machine's core count, which measured 677%
@@ -43,7 +49,7 @@ process PULLAUTA_GRID {
     export RAYON_NUM_THREADS=${task.cpus}
 
     # Exits non-zero only for failures a retry could fix, so a 404 becomes a recorded hole while a
-    # timeout becomes a Nextflow retry.
+    # timeout becomes a Nextflow retry. A .zip tile is downloaded to zips/ and unpacked into in/.
     fetch_laz.py \\
         --csv ${grid_csv} \\
         --outdir in \\
@@ -60,22 +66,22 @@ process PULLAUTA_GRID {
         --ini ${effective_ini} \\
         --processes ${task.cpus} \\
         --max-attempts ${params.max_pullauta_attempts} \\
-        --variant ${params.png_variant} \\
         --log pullauta.${grid_id}.log \\
         --failures failures.${grid_id}.tsv
     """
 
     // The stub names its outputs after the grid's actual core tiles, because the join it feeds is
-    // keyed on those names: a stub that invented a name would make MAKE_TILES receive nothing while
-    // the run still reported success.
+    // keyed on those names: a stub that invented a name would make MAKE_VECTOR_TILES receive
+    // nothing while the run still reported success.
     stub:
-    def suffix = params.png_variant == 'plain' ? '' : '_depr'
     """
     mkdir -p out
-    awk -F, 'NR > 1 && \$5 == "core" { sub(/\\.la[sz]\$/, "", \$1); print \$1 }' ${grid_csv} \\
+    awk -F, 'NR > 1 && \$5 == "core" { sub(/\\.(la[sz]|zip)\$/, "", \$1); print \$1 }' ${grid_csv} \\
         | while read -r stem; do
-              : > "out/\${stem}${suffix}.png"
-              : > "out/\${stem}${suffix}.pgw"
+              mkdir -p "out/\${stem}_vec"
+              for layer in contours vegetation osm_lines; do
+                  : > "out/\${stem}_vec/\${stem}_\${layer}.geojson.gz"
+              done
           done
 
     # The same headers the real scripts write: collectFile keeps the first one it sees, so a stub

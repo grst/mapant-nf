@@ -1,15 +1,21 @@
-// Turn a grid's OSM extract into the zipped ESRI Shapefile set karttapullautin renders vectors from,
-// reprojected into the grid's own CRS.
+// Turn a grid's OSM extract into an ESRI Shapefile set, reprojected into the grid's own CRS.
 //
-// Per grid is a feasibility requirement, not an optimisation: karttapullautin unzips the archive once
-// per invocation and re-lists the unpacked directory *for every tile it renders*, so the
-// Bavaria-wide archive would mean unpacking 30 GB per grid and walking it a hundred times.
+// They are karttapullautin's input: it matches each shape to its ISOM code by the rules file and
+// writes it, cropped per tile, next to the LiDAR vectors. In the grid's CRS because that is the
+// one karttapullautin renders in.
+//
+// Per grid rather than once for the region: each PULLAUTA_GRID task stages only its own grid's
+// archive, and a Bavaria-wide archive is never staged anywhere.
+//
+// The columns are the keys the rules file tests (bin/osmconf.py): ogr2ogr's default set has no
+// `power` on lines, for one, and a rule on a key that is not a column matches nothing.
 process OSM_TO_SHAPES {
     tag "${grid_id}"
     label 'process_low'
 
     input:
     tuple val(grid_id), path(grid_pbf), val(crs)
+    path rules, stageAs: 'rules/*'
 
     output:
     tuple val(grid_id), path('shapes/*'), emit: shapes
@@ -18,12 +24,20 @@ process OSM_TO_SHAPES {
     """
     mkdir -p shapes
 
+    osmconf.py \\
+        --rules ${rules} \\
+        --template "\$(python3 -c "from osgeo import gdal; print(gdal.FindFile('gdal', 'osmconf.ini'))")" \\
+        --out osmconf.ini
+
+    #   OSM_CONFIG_FILE             -- the columns, see above
     #   OSM_USE_CUSTOM_INDEXING NO  -- the custom index needs scratch proportional to the input and
     #                                  buys nothing on an extract this small
     #   -skipfailures               -- OSM is full of geometries that cannot be expressed as a
     #                                  shapefile feature; one of them must not fail the grid
-    #   -t_srs                      -- karttapullautin cannot reproject
+    #   -t_srs                      -- karttapullautin draws the shapes in the grid's own CRS,
+    #                                  and reprojects them to WGS84 with everything else
     ogr2ogr \\
+        --config OSM_CONFIG_FILE osmconf.ini \\
         --config OSM_USE_CUSTOM_INDEXING NO \\
         -skipfailures \\
         -f 'ESRI Shapefile' \\
@@ -33,17 +47,14 @@ process OSM_TO_SHAPES {
         -t_srs ${crs}
 
     if compgen -G 'output_shapes/*.shp' > /dev/null; then
-        # -j to flatten: karttapullautin expects the layers at the root of the archive.
-        zip -q -j shapes/map.shp.zip output_shapes/*
+        # -j to flatten: karttapullautin pairs .shp with .dbf by name, so the layers have to sit
+        # at the root of the archive.
+        zip -q -j 'shapes/${grid_id}.shp.zip' output_shapes/*
         printf '%s: %s layer(s)\\n' '${grid_id}' "\$(ls output_shapes/*.shp | wc -l)" >&2
     else
-        # No OSM features worth drawing in this grid. A sentinel rather than an empty archive: given a
-        # zip, karttapullautin takes its has_zip path and expects the vector render to have produced
-        # its intermediate images.
-        #
-        # Written here rather than copied from assets/ because a process must not reach for
-        # \$projectDir -- on an executor without a shared filesystem that path does not exist.
-        printf 'no OSM features in this grid\\n' > shapes/NONE
+        # No OSM features worth drawing in this grid. A sentinel rather than an empty archive, so
+        # that the join downstream still has something to carry: PULLAUTA_GRID stages nothing for it.
+        printf 'no OSM features in this grid\\n' > 'shapes/${grid_id}.NONE'
         printf '%s: no OSM features; contours and vegetation only\\n' '${grid_id}' >&2
     fi
 
@@ -53,6 +64,6 @@ process OSM_TO_SHAPES {
     stub:
     """
     mkdir -p shapes
-    : > shapes/map.shp.zip
+    : > 'shapes/${grid_id}.shp.zip'
     """
 }

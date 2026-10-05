@@ -14,10 +14,19 @@ tile rendered with its ring present is byte-identical to the same tile rendered 
 Outputs (all relative to --outdir)
 ----------------------------------
 grids/<grid_id>.csv   one row per laz file the grid needs, role=core|halo
-grids.csv             one row per grid: crs, counts, bbox
-parent_tiles.csv      long form (tile, parent, z, x, y, crs, n_core) -- the tiling fan-out
+grids.csv             one row per grid: crs, ini, counts, bbox
+inis.csv              one row per karttapullautin configuration the selected tiles use
+parent_tiles.csv      long form (tile, parent, z, x, y, crs, n_core, tile bbox) -- the tiling fan-out
 osm_chunks/<id>.json  ready-made `osmium extract --config` files, several grids per pass
 plan_summary.txt      the numbers you want before starting a multi-terabyte run
+
+Configurations
+--------------
+A tile is rendered with the ini its `pullauta_ini` column names, or with --default-ini where the
+column is absent or empty -- so one run can render, say, two generations of LiDAR with the settings
+each needs. A grid holds tiles of one configuration only: a lattice block with tiles of two is two
+grids, which share the block's id and differ in the ini's. The halo does not care: it is points,
+and the points are the same whatever renders them.
 """
 
 from __future__ import annotations
@@ -26,6 +35,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass
@@ -42,8 +52,6 @@ MERCATOR_LAT_LIMIT = 85.0511287798066
 REQUIRED_COLUMNS = (
     "tile",
     "url",
-    "size_bytes",
-    "sha256",
     "crs",
     "min_x",
     "min_y",
@@ -65,6 +73,10 @@ GRID_CSV_COLUMNS = (
 )
 
 
+#: The optional samplesheet column naming a tile's karttapullautin configuration.
+INI_COLUMN = "pullauta_ini"
+
+
 class PlanError(Exception):
     """A problem with the input that the user has to fix; reported without a traceback."""
 
@@ -74,12 +86,16 @@ class Tile:
     tile: str
     url: str
     sha256: str
+    # 0 when the samplesheet does not say: the column is optional, like the checksum.
     size_bytes: int
     crs: str
     min_x: float
     min_y: float
     max_x: float
     max_y: float
+    # The karttapullautin configuration this tile is rendered with: the path as the samplesheet
+    # (or --default-ini) gives it. Only its name is used here.
+    ini: str = ""
     # The WGS84 envelope of the projected box, filled in by derive_lonlat().
     min_lon: float = math.nan
     min_lat: float = math.nan
@@ -98,8 +114,11 @@ class Tile:
 # ---------------------------------------------------------------------------
 # Reading and checking the input
 # ---------------------------------------------------------------------------
-def read_tiles(path: Path) -> list[Tile]:
-    """Read the tiles CSV, ignoring any column outside the contract."""
+def read_tiles(path: Path, default_ini: str = "") -> list[Tile]:
+    """
+    Read the tiles CSV, ignoring any column outside the contract. A tile's `pullauta_ini`, where
+    the column exists and is filled in, takes precedence over `default_ini`.
+    """
     with path.open(newline="") as fh:
         reader = csv.DictReader(fh)
         if reader.fieldnames is None:
@@ -118,13 +137,16 @@ def read_tiles(path: Path) -> list[Tile]:
                 t = Tile(
                     tile=row["tile"].strip(),
                     url=row["url"].strip(),
-                    sha256=row["sha256"].strip().lower(),
-                    size_bytes=int(row["size_bytes"]),
+                    # Both optional, as a column and per row: fetch_laz.py checks what is there. The
+                    # checksum may carry an algorithm prefix (`sha1:...`), which passes through.
+                    sha256=(row.get("sha256") or "").strip().lower(),
+                    size_bytes=int((row.get("size_bytes") or "").strip() or 0),
                     crs=row["crs"].strip(),
                     min_x=float(row["min_x"]),
                     min_y=float(row["min_y"]),
                     max_x=float(row["max_x"]),
                     max_y=float(row["max_y"]),
+                    ini=(row.get(INI_COLUMN) or "").strip() or default_ini,
                 )
             except (TypeError, ValueError) as exc:
                 raise PlanError(f"{path}:{lineno}: {exc}") from exc
@@ -140,6 +162,15 @@ def read_tiles(path: Path) -> list[Tile]:
 
     if not tiles:
         raise PlanError(f"{path} has a header but no data rows")
+    # Everything downstream -- the file in karttapullautin's input folder, the rendered tile, the
+    # bundle -- is named by the stem, so `a.laz` and `a.zip` would overwrite each other.
+    stems = Counter(Path(t.tile).stem for t in tiles)
+    clashes = sorted(s for s, n in stems.items() if n > 1)
+    if clashes:
+        raise PlanError(
+            f"{path}: {len(clashes)} tile name(s) differ only in their extension, e.g. "
+            f"{', '.join(t.tile for t in tiles if Path(t.tile).stem == clashes[0])}"
+        )
     return tiles
 
 
@@ -148,10 +179,9 @@ def require_single_crs(tiles: list[Tile]) -> str:
     Refuse input that mixes coordinate reference systems.
 
     karttapullautin compares raw header coordinates when it decides which files overlap a tile, so
-    mixing UTM zones inside one grid produces garbage rather than an error. Supporting a multi-zone
-    dataset needs a warp step (each foreign-CRS render reprojected onto the target lattice *before*
-    tiling, because k2t writes opaque white for nodata and two runs cannot be alpha-composited);
-    that is not implemented, so this fails loudly instead.
+    mixing UTM zones inside one grid produces garbage rather than an error. A multi-zone dataset
+    would also need the CRS to travel with the pyramid, since the tiler is told one per parent and
+    the OCD export reads it back; that is not implemented, so this fails loudly instead.
     """
     counts = Counter(t.crs for t in tiles)
     if len(counts) == 1:
@@ -172,7 +202,7 @@ def derive_lonlat(tiles: list[Tile]) -> None:
     `transform_bounds(densify_pts=...)` rather than transforming the four corners: a UTM box's
     edges are curves in lon/lat, so the corner-only envelope is *smaller* than the true one. Tiles
     would then be assigned to fewer web-mercator parents than they cover, which shows up as seams
-    in the finished map. Erring large is free -- k2t re-filters with exact geometry.
+    in the finished map. Erring large is free -- the tiler clips to the parent's exact bounds.
 
     Grouped by CRS because this runs before the single-CRS check: a multi-zone national dataset is
     only rejected once the region filter has had its chance to narrow the selection.
@@ -254,16 +284,33 @@ def infer_tile_size(tiles: list[Tile]) -> tuple[float, float, bool]:
     return w, h, uniform
 
 
-def grid_id_for(crs: str, ix: int, iy: int, grid_size: int) -> str:
+def grid_id_for(crs: str, ix: int, iy: int, grid_size: int, ini_id: str) -> str:
     """
-    Name a grid from absolute lattice coordinates, never from the dataset's extent.
+    Name a grid from absolute lattice coordinates and its configuration, never from the dataset's
+    extent.
 
     A block index relative to the first selected tile would renumber every grid when the region
     filter changes, invalidating the whole `-resume` cache. Absolute indices make a grid's identity
-    a pure function of the tiles in it and `grid_size`.
+    a pure function of the tiles in it, `grid_size` and the configuration's name.
     """
     epsg = crs.split(":")[-1]
-    return f"grid_{epsg}_{ix // grid_size}_{iy // grid_size}"
+    return f"grid_{epsg}_{ix // grid_size}_{iy // grid_size}_{ini_id}"
+
+
+def ini_ids(tiles: list[Tile]) -> dict[str, str]:
+    """
+    A short, file-name-safe id for each configuration: its file name without the extension, with
+    anything but letters and digits made an underscore. Two different paths with the same name
+    are told apart by a number, in the order of their paths, so the ids do not depend on the order
+    of the CSV.
+    """
+    ids: dict[str, str] = {}
+    taken: Counter[str] = Counter()
+    for path in sorted({t.ini for t in tiles}):
+        stem = re.sub(r"[^A-Za-z0-9]+", "_", Path(path).name.removesuffix(".ini")).strip("_") or "ini"
+        taken[stem] += 1
+        ids[path] = stem if taken[stem] == 1 else f"{stem}_{taken[stem]}"
+    return ids
 
 
 def build_grids(
@@ -272,9 +319,11 @@ def build_grids(
     *,
     crs: str,
     grid_size: int,
+    ini_id: dict[str, str] | None = None,
 ) -> dict[str, dict[str, list[Tile]]]:
     """
-    Partition `core_tiles` into lattice blocks and attach each block's ring of neighbours.
+    Partition `core_tiles` into lattice blocks, one grid per block and configuration, and attach
+    each grid's ring of neighbours.
 
     `halo_pool` is deliberately the *whole* dataset rather than the region-filtered selection. Halo
     membership decides what points a render can see, so drawing it from the selection would make a
@@ -288,10 +337,11 @@ def build_grids(
     def index(t: Tile) -> tuple[int, int]:
         return math.floor(t.min_x / tile_w), math.floor(t.min_y / tile_h)
 
+    ini_id = ini_id or ini_ids(core_tiles)
     blocks: dict[str, list[Tile]] = defaultdict(list)
     for t in core_tiles:
         ix, iy = index(t)
-        blocks[grid_id_for(crs, ix, iy, grid_size)].append(t)
+        blocks[grid_id_for(crs, ix, iy, grid_size, ini_id[t.ini])].append(t)
 
     pool_by_cell: dict[tuple[int, int], list[Tile]] = defaultdict(list)
     for t in halo_pool:
@@ -316,6 +366,8 @@ def build_grids(
             "core": sorted(core, key=lambda t: (t.min_x, t.min_y)),
             "halo": sorted(halo, key=lambda t: (t.min_x, t.min_y)),
         }
+    # A tile of another configuration in the same block is a neighbour like any other: the
+    # halo above is drawn from the whole pool, which already includes it.
     return grids
 
 
@@ -347,7 +399,7 @@ def write_grid_csvs(outdir: Path, grids: dict[str, dict[str, list[Tile]]]) -> No
                             t.tile,
                             t.url,
                             t.sha256,
-                            t.size_bytes,
+                            t.size_bytes or "",
                             role,
                             t.crs,
                             f"{t.min_x:.6f}",
@@ -358,11 +410,14 @@ def write_grid_csvs(outdir: Path, grids: dict[str, dict[str, list[Tile]]]) -> No
                     )
 
 
-def write_grid_index(outdir: Path, grids: dict[str, dict[str, list[Tile]]], crs: str) -> None:
+def write_grid_index(
+    outdir: Path, grids: dict[str, dict[str, list[Tile]]], crs: str, ini_id: dict[str, str]
+) -> None:
     with (outdir / "grids.csv").open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(
-            ["grid_id", "crs", "n_core", "n_halo", "bytes_total", "min_x", "min_y", "max_x", "max_y"]
+            ["grid_id", "crs", "ini_id", "n_core", "n_halo", "bytes_total",
+             "min_x", "min_y", "max_x", "max_y"]
         )
         for grid_id, parts in grids.items():
             everything = parts["core"] + parts["halo"]
@@ -370,6 +425,7 @@ def write_grid_index(outdir: Path, grids: dict[str, dict[str, list[Tile]]], crs:
                 [
                     grid_id,
                     crs,
+                    ini_id[parts["core"][0].ini],
                     len(parts["core"]),
                     len(parts["halo"]),
                     sum(t.size_bytes for t in everything),
@@ -379,6 +435,17 @@ def write_grid_index(outdir: Path, grids: dict[str, dict[str, list[Tile]]], crs:
                     f"{max(t.max_y for t in everything):.6f}",
                 ]
             )
+
+
+def write_ini_index(outdir: Path, ini_id: dict[str, str], tiles: list[Tile]) -> None:
+    """The configurations the selected tiles use: id, the path as given, and the tile count."""
+    used = Counter(t.ini for t in tiles)
+    with (outdir / "inis.csv").open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["ini_id", "path", "n_tiles"])
+        for path, ident in sorted(ini_id.items(), key=lambda item: item[1]):
+            if used[path]:
+                w.writerow([ident, path, used[path]])
 
 
 def write_parent_tiles(
@@ -392,21 +459,26 @@ def write_parent_tiles(
 
     `n_core` is the number of core tiles feeding that parent. Nextflow uses it as the `groupKey`
     size, so tiling of a finished parent can start while other grids are still rendering.
+
+    The tile's own box (in `crs`) is what the tiler draws the map's coverage from.
     """
-    rows: list[tuple[str, str, int, int, int]] = []
+    rows: list[tuple[str, str, int, int, int, Tile]] = []
     per_parent: Counter[mercantile.Tile] = Counter()
     for parts in grids.values():
         for t in parts["core"]:
             stem = Path(t.tile).stem
             for p in parent_tiles_for(t, base_zoom):
-                rows.append((stem, f"{p.z}_{p.x}_{p.y}", p.z, p.x, p.y))
+                rows.append((stem, f"{p.z}_{p.x}_{p.y}", p.z, p.x, p.y, t))
                 per_parent[p] += 1
 
     with (outdir / "parent_tiles.csv").open("w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["tile", "parent", "z", "x", "y", "crs", "n_core"])
-        for tile_name, parent, z, x, y in sorted(rows, key=lambda r: (r[2], r[3], r[4], r[0])):
-            w.writerow([tile_name, parent, z, x, y, crs, per_parent[mercantile.Tile(x, y, z)]])
+        w.writerow(["tile", "parent", "z", "x", "y", "crs", "n_core", "min_x", "min_y", "max_x", "max_y"])
+        for tile_name, parent, z, x, y, t in sorted(rows, key=lambda r: (r[2], r[3], r[4], r[0])):
+            w.writerow(
+                [tile_name, parent, z, x, y, crs, per_parent[mercantile.Tile(x, y, z)],
+                 f"{t.min_x:.6f}", f"{t.min_y:.6f}", f"{t.max_x:.6f}", f"{t.max_y:.6f}"]
+            )
     return len(per_parent), len(rows)
 
 
@@ -476,6 +548,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tiles-csv", type=Path, required=True)
     ap.add_argument("--outdir", type=Path, default=Path("."))
     ap.add_argument("--grid-size", type=int, required=True, help="core tiles per grid edge")
+    ap.add_argument(
+        "--default-ini",
+        default="pullauta.ini",
+        help=f"the karttapullautin ini for tiles whose `{INI_COLUMN}` is absent or empty",
+    )
     ap.add_argument("--base-zoom", type=int, default=12)
     ap.add_argument("--osm-buffer-m", type=float, default=2000.0)
     ap.add_argument("--osm-chunk-size", type=int, default=32)
@@ -490,7 +567,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.grid_size < 1:
         raise PlanError("--grid-size must be >= 1")
 
-    all_tiles = read_tiles(args.tiles_csv)
+    all_tiles = read_tiles(args.tiles_csv, args.default_ini)
     derive_lonlat(all_tiles)
 
     bbox = parse_bbox(args.bbox) if args.bbox else None
@@ -501,11 +578,13 @@ def main(argv: list[str] | None = None) -> int:
     halo_pool = [t for t in all_tiles if t.crs == crs]
 
     tile_w, tile_h, uniform = infer_tile_size(tiles)
-    grids = build_grids(tiles, halo_pool, crs=crs, grid_size=args.grid_size)
+    ini_id = ini_ids(tiles)
+    grids = build_grids(tiles, halo_pool, crs=crs, grid_size=args.grid_size, ini_id=ini_id)
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     write_grid_csvs(args.outdir, grids)
-    write_grid_index(args.outdir, grids, crs)
+    write_grid_index(args.outdir, grids, crs, ini_id)
+    write_ini_index(args.outdir, ini_id, tiles)
     n_parents, n_parent_rows = write_parent_tiles(
         args.outdir, grids, crs=crs, base_zoom=args.base_zoom
     )
@@ -528,6 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     distinct = {t.tile: t for parts in grids.values() for t in parts["core"] + parts["halo"]}
     distinct_bytes = sum(t.size_bytes for t in distinct.values())
     halo_only = len(distinct) - len(tiles)
+    unsized = sum(1 for t in distinct.values() if not t.size_bytes)
 
     lines = [
         "mapant plan",
@@ -543,6 +623,13 @@ def main(argv: list[str] | None = None) -> int:
         f"halo only            {halo_only:,}  (fetched for their points, never rendered; drawn "
         f"from the whole CSV so a filtered region renders identically to a full run)",
         "",
+        f"configurations       {len(ini_id)}",
+        *(
+            f"  {ident:18s} {n:,} tile(s)  {path}"
+            for path, ident in sorted(ini_id.items(), key=lambda item: item[1])
+            for n in [sum(t.ini == path for t in tiles)]
+        ),
+        "",
         f"grids                {len(grids):,}  (grid_size={args.grid_size})",
         f"  core tiles/grid    min {min(len(p['core']) for p in grids.values())}, "
         f"max {max(len(p['core']) for p in grids.values())}, "
@@ -554,11 +641,16 @@ def main(argv: list[str] | None = None) -> int:
         f"mapped area          {human_bytes(core_bytes)} of laz",
         f"distinct files       {human_bytes(distinct_bytes)} over {len(distinct):,} files",
         f"to download          {human_bytes(fetch_bytes)}  "
-        f"(amplification {fetch_bytes / distinct_bytes:.2f}x -- a halo tile is fetched once per "
-        f"grid that borders it; raise --grid-size to reduce it)",
+        f"(amplification {fetch_bytes / max(distinct_bytes, 1):.2f}x -- a halo tile is fetched once "
+        f"per grid that borders it; raise --grid-size to reduce it)",
         f"peak laz per grid    {human_bytes(max(per_grid_bytes))} "
         f"(mean {human_bytes(sum(per_grid_bytes) / len(per_grid_bytes))})",
         "  + karttapullautin temporaries, roughly 3 GiB per configured process",
+        *(
+            [f"size unknown         {unsized:,} file(s) without size_bytes; the byte totals above "
+             "leave them out"]
+            if unsized else []
+        ),
         "",
         f"web-mercator parents {n_parents:,} at z{args.base_zoom} "
         f"({n_parent_rows:,} tile->parent assignments)",

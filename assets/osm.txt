@@ -1,5 +1,7 @@
 power line|524|barrier!=
 power line|516|power!=
+pylon|516P|power=tower
+pylon|516P|power=pole
 trench|516 |tags="accident"=>"trench"
 building|526|building!=
 settlement|527|landusedisabled=residential

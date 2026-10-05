@@ -52,7 +52,6 @@ MERCATOR_LAT_LIMIT = 85.0511287798066
 REQUIRED_COLUMNS = (
     "tile",
     "url",
-    "size_bytes",
     "crs",
     "min_x",
     "min_y",
@@ -87,6 +86,7 @@ class Tile:
     tile: str
     url: str
     sha256: str
+    # 0 when the samplesheet does not say: the column is optional, like the checksum.
     size_bytes: int
     crs: str
     min_x: float
@@ -137,9 +137,10 @@ def read_tiles(path: Path, default_ini: str = "") -> list[Tile]:
                 t = Tile(
                     tile=row["tile"].strip(),
                     url=row["url"].strip(),
-                    # Optional, as a column and per row: empty means fetch_laz.py checks the size only.
+                    # Both optional, as a column and per row: fetch_laz.py checks what is there. The
+                    # checksum may carry an algorithm prefix (`sha1:...`), which passes through.
                     sha256=(row.get("sha256") or "").strip().lower(),
-                    size_bytes=int(row["size_bytes"]),
+                    size_bytes=int((row.get("size_bytes") or "").strip() or 0),
                     crs=row["crs"].strip(),
                     min_x=float(row["min_x"]),
                     min_y=float(row["min_y"]),
@@ -398,7 +399,7 @@ def write_grid_csvs(outdir: Path, grids: dict[str, dict[str, list[Tile]]]) -> No
                             t.tile,
                             t.url,
                             t.sha256,
-                            t.size_bytes,
+                            t.size_bytes or "",
                             role,
                             t.crs,
                             f"{t.min_x:.6f}",
@@ -606,6 +607,7 @@ def main(argv: list[str] | None = None) -> int:
     distinct = {t.tile: t for parts in grids.values() for t in parts["core"] + parts["halo"]}
     distinct_bytes = sum(t.size_bytes for t in distinct.values())
     halo_only = len(distinct) - len(tiles)
+    unsized = sum(1 for t in distinct.values() if not t.size_bytes)
 
     lines = [
         "mapant plan",
@@ -639,11 +641,16 @@ def main(argv: list[str] | None = None) -> int:
         f"mapped area          {human_bytes(core_bytes)} of laz",
         f"distinct files       {human_bytes(distinct_bytes)} over {len(distinct):,} files",
         f"to download          {human_bytes(fetch_bytes)}  "
-        f"(amplification {fetch_bytes / distinct_bytes:.2f}x -- a halo tile is fetched once per "
-        f"grid that borders it; raise --grid-size to reduce it)",
+        f"(amplification {fetch_bytes / max(distinct_bytes, 1):.2f}x -- a halo tile is fetched once "
+        f"per grid that borders it; raise --grid-size to reduce it)",
         f"peak laz per grid    {human_bytes(max(per_grid_bytes))} "
         f"(mean {human_bytes(sum(per_grid_bytes) / len(per_grid_bytes))})",
         "  + karttapullautin temporaries, roughly 3 GiB per configured process",
+        *(
+            [f"size unknown         {unsized:,} file(s) without size_bytes; the byte totals above "
+             "leave them out"]
+            if unsized else []
+        ),
         "",
         f"web-mercator parents {n_parents:,} at z{args.base_zoom} "
         f"({n_parent_rows:,} tile->parent assignments)",

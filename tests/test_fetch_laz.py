@@ -239,3 +239,64 @@ def test_a_corrupt_member_is_caught_by_its_crc_without_a_checksum(tmp_path: Path
     assert failures[0][2] == "permanent"
     assert "unreadable archive" in failures[0][3]
     assert list((tmp_path / "in").iterdir()) == []
+
+
+# ---------------------------------------------------------------------------
+# checksum algorithms and unknown sizes
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "checksum",
+    [
+        "sha1:" + hashlib.sha1(GOOD).hexdigest(),
+        "sha256:" + GOOD_SHA,
+        "SHA1:" + hashlib.sha1(GOOD).hexdigest().upper(),
+    ],
+    ids=["sha1", "sha256-prefixed", "upper-case"],
+)
+def test_a_prefixed_checksum_names_its_algorithm(tmp_path: Path, checksum: str) -> None:
+    src = write_source(tmp_path, "600_5300.laz", GOOD)
+    status, *failures = run_fetch(tmp_path, [row_for(src, size=len(GOOD), sha256=checksum)])
+
+    assert (status, failures) == (0, [])
+
+
+def test_a_wrong_sha1_is_permanent(tmp_path: Path) -> None:
+    payload = b"x" * len(GOOD)
+    src = write_source(tmp_path, "600_5300.laz", payload)
+    checksum = "sha1:" + hashlib.sha1(GOOD).hexdigest()
+    status, *failures = run_fetch(tmp_path, [row_for(src, size=len(GOOD), sha256=checksum)])
+
+    assert status == 0
+    assert [(f[2], "sha1 mismatch" in f[3]) for f in failures] == [("permanent", True)]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["abc", "md5:" + "0" * 32, "sha1:" + "0" * 64, "sha256:" + "0" * 40, "z" * 64],
+)
+def test_a_malformed_checksum_is_refused(value: str) -> None:
+    with pytest.raises(ValueError, match="not a checksum"):
+        fetch_laz.parse_checksum(value)
+
+
+def test_a_file_of_unknown_size_is_checked_by_its_checksum(tmp_path: Path) -> None:
+    src = write_source(tmp_path, "600_5300.laz", GOOD)
+    row = row_for(src, size=len(GOOD), sha256=GOOD_SHA) | {"size_bytes": ""}
+    status, *failures = run_fetch(tmp_path, [row])
+    assert (status, failures) == (0, [])
+
+    # A fresh directory, or the verified copy from the first run would be reused.
+    src.write_bytes(GOOD[:10])
+    (tmp_path / "again").mkdir()
+    status, *failures = run_fetch(tmp_path / "again", [row])
+    assert [(f[2], "sha256 mismatch" in f[3]) for f in failures] == [("permanent", True)]
+
+
+def test_a_file_with_neither_size_nor_checksum_is_accepted(tmp_path: Path) -> None:
+    """Nothing to check it against but curl's own Content-Length check."""
+    src = write_source(tmp_path, "600_5300.laz", GOOD)
+    row = row_for(src, size=len(GOOD), sha256="") | {"size_bytes": ""}
+    status, *failures = run_fetch(tmp_path, [row])
+
+    assert (status, failures) == (0, [])
+    assert (tmp_path / "in" / "600_5300.laz").read_bytes() == GOOD

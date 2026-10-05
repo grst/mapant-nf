@@ -439,10 +439,26 @@ def test_degenerate_bbox_is_rejected(tmp_path):
 
 def test_missing_required_column_names_what_is_missing(tmp_path):
     rows = [tile_row(1, 1)]
-    del rows[0]["size_bytes"]
-    csv_path = write_csv(tmp_path / "t.csv", rows, [c for c in TILE_COLUMNS if c != "size_bytes"])
-    with pytest.raises(pg.PlanError, match="size_bytes"):
+    del rows[0]["crs"]
+    csv_path = write_csv(tmp_path / "t.csv", rows, [c for c in TILE_COLUMNS if c != "crs"])
+    with pytest.raises(pg.PlanError, match="crs"):
         pg.read_tiles(csv_path)
+
+
+def test_size_is_optional_and_a_plan_without_any_still_summarises(tmp_path):
+    rows = [tile_row(ix, iy, size_bytes="") for ix in range(2) for iy in range(2)]
+    columns = [c for c in TILE_COLUMNS if c != "size_bytes"]
+    for r in rows:
+        del r["size_bytes"]
+    csv_path = write_csv(tmp_path / "t.csv", rows, columns)
+    assert [t.size_bytes for t in pg.read_tiles(csv_path)] == [0] * 4
+
+    out = tmp_path / "plan"
+    out.mkdir()
+    assert pg.main(["--tiles-csv", str(csv_path), "--outdir", str(out), "--grid-size", "2"]) == 0
+    assert "4 file(s) without size_bytes" in (out / "plan_summary.txt").read_text()
+    grid_csv = next((out / "grids").glob("*.csv")).read_text().splitlines()
+    assert grid_csv[1].split(",")[3] == ""  # size_bytes, left empty rather than invented
 
 
 def test_sha256_is_optional_as_a_column_and_per_row(tmp_path):
@@ -544,6 +560,9 @@ def test_schema_accepts_a_local_path_instead_of_a_url():
         pytest.param({"sha256": ""}, id="empty-sha256"),
         pytest.param({"sha256": None}, id="no-sha256"),
         pytest.param({"tile": "lsc_33430_5640_2_sn_laz.zip"}, id="zip-tile"),
+        pytest.param({"sha256": "sha1:" + "a" * 40}, id="sha1-prefixed"),
+        pytest.param({"sha256": "sha256:" + "a" * 64}, id="sha256-prefixed"),
+        pytest.param({"size_bytes": None}, id="no-size"),
     ],
 )
 def test_schema_accepts_optional_checksums_and_zip_tiles(variant):
@@ -567,6 +586,8 @@ def test_schema_accepts_optional_checksums_and_zip_tiles(variant):
     [
         pytest.param({"sha256": "abc"}, id="short-sha256"),
         pytest.param({"sha256": "z" * 64}, id="non-hex-sha256"),
+        pytest.param({"sha256": "sha1:" + "a" * 64}, id="sha1-of-sha256-length"),
+        pytest.param({"sha256": "md5:" + "a" * 32}, id="unsupported-algorithm"),
         pytest.param({"size_bytes": 0}, id="zero-size"),
         pytest.param({"size_bytes": -5}, id="negative-size"),
         pytest.param({"crs": "25832"}, id="crs-without-epsg-prefix"),

@@ -25,7 +25,7 @@ readonly PROFILE="${1:-podman}"
 readonly TILES_CSV="${REPO}/assets/laz_tiles_immenstadt.csv"
 readonly BROKEN_TILE='591_5269'
 # 589_5269.laz is the smallest file in the region (39 MB against the 136 MB the CSV claims for
-# 591_5269, so the size check alone settles it), and it is a halo tile of this grid anyway.
+# 591_5269, so it is quick to fetch and hash), and it is a halo tile of this grid anyway.
 readonly WRONG_FILE='589_5269.laz'
 readonly SCRATCH="${REPO}/.failure_injection"
 

@@ -1,7 +1,7 @@
 """
 Test bin/fetch_laz.py's verdict on a file that arrives but is wrong.
 
-Verification -- size always, sha256 where the CSV has one, CRC-32 for a .zip's members -- is the
+Verification -- the checksum where the CSV has one, CRC-32 for a .zip's members -- is the
 pipeline's only defence against a laz file that is present and corrupt:
 karttapullautin renders whatever points it can read, so a truncated or misdelivered file becomes a
 plausible but wrong map tile rather than an error. What the verdict has to be is as load-bearing as
@@ -85,7 +85,7 @@ def test_a_file_that_matches_is_accepted(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("payload", "expected_detail"),
     [
-        (GOOD[:10], "size mismatch"),
+        (GOOD[:10], "sha256 mismatch"),
         (b"x" * len(GOOD), "sha256 mismatch"),
     ],
     ids=["truncated", "wrong bytes of the right length"],
@@ -134,7 +134,7 @@ def test_a_file_that_is_simply_absent_is_transient(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # no checksum in the CSV
 # ---------------------------------------------------------------------------
-def test_a_file_without_a_checksum_is_accepted_on_its_size(tmp_path: Path) -> None:
+def test_a_file_without_a_checksum_is_accepted(tmp_path: Path) -> None:
     src = write_source(tmp_path, "600_5300.laz", GOOD)
     status, *failures = run_fetch(tmp_path, [row_for(src, size=len(GOOD), sha256="")])
 
@@ -143,14 +143,14 @@ def test_a_file_without_a_checksum_is_accepted_on_its_size(tmp_path: Path) -> No
     assert (tmp_path / "in" / "600_5300.laz").read_bytes() == GOOD
 
 
-def test_a_truncated_file_without_a_checksum_is_still_caught(tmp_path: Path) -> None:
-    """The size is all that is left without a checksum, and it catches the common failure."""
-    src = write_source(tmp_path, "600_5300.laz", GOOD[:10])
-    status, *failures = run_fetch(tmp_path, [row_for(src, size=len(GOOD), sha256="")])
+@pytest.mark.parametrize("sha256", [GOOD_SHA, ""], ids=["with-checksum", "without-checksum"])
+def test_a_misreported_size_is_not_held_against_the_file(tmp_path: Path, sha256: str) -> None:
+    """Sources misreport sizes; the checksum, where there is one, is what decides."""
+    src = write_source(tmp_path, "600_5300.laz", GOOD)
+    status, *failures = run_fetch(tmp_path, [row_for(src, size=len(GOOD) + 1, sha256=sha256)])
 
-    assert status == 0
-    assert [(f[2], "size mismatch" in f[3]) for f in failures] == [("permanent", True)]
-    assert not (tmp_path / "in" / "600_5300.laz").exists()
+    assert (status, failures) == (0, [])
+    assert (tmp_path / "in" / "600_5300.laz").read_bytes() == GOOD
 
 
 # ---------------------------------------------------------------------------

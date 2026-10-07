@@ -4,11 +4,11 @@ Acquire every laz file a grid needs into ./in, and prove each one arrived intact
 
 A truncated laz does not make karttapullautin fail -- it renders whatever points it managed to read,
 so the damage surfaces as a plausible but wrong map tile. So every file is verified on every attempt,
-however it arrived: by size and checksum, each where the CSV has one. The checksum column holds a
-bare SHA-256, or a digest prefixed with its algorithm (`sha256:<hex>`, `sha1:<hex>`): few sources
-publish SHA-256, and some publish SHA-1. The size alone catches the common case, a transfer cut
-short; with neither, there is still curl, which fails a transfer shorter than the server's
-Content-Length.
+however it arrived: by its checksum, where the CSV has one. The checksum column holds a bare
+SHA-256, or a digest prefixed with its algorithm (`sha256:<hex>`, `sha1:<hex>`): few sources publish
+SHA-256, and some publish SHA-1. The CSV's size is not checked: sources misreport it, and a correct
+file must not be rejected for it. Without a checksum there is still curl, which fails a transfer
+shorter than the server's Content-Length.
 
 A tile may be a .zip holding one .laz/.las, the way several sources serve them. It is downloaded
 next to ./in rather than into it -- karttapullautin unzips any archive in its input folder itself --
@@ -73,15 +73,10 @@ def parse_size(value: str | None) -> int | None:
     return int(value) if value else None
 
 
-def verify(path: Path, size: int | None, checksum: tuple[str, str] | None) -> str | None:
+def verify(path: Path, checksum: tuple[str, str] | None) -> str | None:
     """Return None if the file matches, else a description of the mismatch. Unknown, unchecked."""
     if not path.is_file():
         return "missing"
-    # Size first: it is free, and it catches the common truncation case without hashing hundreds of
-    # megabytes to find out.
-    actual_size = path.stat().st_size
-    if size is not None and actual_size != size:
-        return f"size mismatch (expected {size}, got {actual_size})"
     if checksum is None:
         return None
     algo, expected = checksum
@@ -151,14 +146,14 @@ def fetch_one(row: dict[str, str], args: argparse.Namespace) -> tuple[str, str]:
     Outcome is 'ok', 'permanent' (no retry can help) or 'transient' (the grid should be retried).
     """
     tile = row["tile"]
-    size, sha = parse_size(row.get("size_bytes")), parse_checksum(row.get("sha256"))
+    sha = parse_checksum(row.get("sha256"))
     archive = is_zip(tile)
     # An archive lands outside ./in: karttapullautin would try to unzip it as a shapefile set.
     dest = (args.zipdir if archive else args.outdir) / tile
 
     # Already there and intact? That happens on a Nextflow retry of the same task. An unpacked laz
-    # cannot be checked against the archive's size and checksum, so an archive is fetched again.
-    if not archive and dest.exists() and verify(dest, size, sha) is None:
+    # cannot be checked against the archive's checksum, so an archive is fetched again.
+    if not archive and dest.exists() and verify(dest, sha) is None:
         return "ok", "cached"
     dest.unlink(missing_ok=True)
 
@@ -178,7 +173,7 @@ def fetch_one(row: dict[str, str], args: argparse.Namespace) -> tuple[str, str]:
         status, http_code, stderr = curl(url, part, args.limit_rate)
         if status == 0:
             part.replace(dest)
-            problem = verify(dest, size, sha)
+            problem = verify(dest, sha)
             if problem is None and archive:
                 problem = unpack(dest, args.outdir)
                 dest.unlink()

@@ -278,3 +278,18 @@ def test_tippecanoe_accepts_the_command(tmp_path):
                      "--parent-tiles", str(parent_tiles), "--work-dir", str(tmp_path / "t"),
                      str(tmp_path / "in"), str(archive)]) == 0
     assert archive.read_bytes()[:7] == b"PMTiles"
+
+
+@pytest.mark.skipif(shutil.which("tippecanoe") is None, reason="needs tippecanoe")
+def test_a_parent_with_nothing_inside_its_bounds_writes_no_archive(tmp_path):
+    """The tile->parent map errs large: a tile may only touch its parent, and clip to nothing."""
+    write_bundle(tmp_path / "in", "593_5269", {
+        "contours": [feature("102", layer="contour_index", elevation=700.0)],
+    })
+    parent_tiles = write_parent_tiles(tmp_path / "p.csv", {"593_5269": (593000, 5269000, 594000, 5270000)})
+    archive = tmp_path / "13-4331-2862.pmtiles"
+    assert mvt.main(["--parent", "13", "4331", "2862", "--max-zoom", "14",
+                     "--crosswalk", str(REPO / "assets" / "isom2000-isom2017-2.crt"),
+                     "--parent-tiles", str(parent_tiles), "--work-dir", str(tmp_path / "t"),
+                     str(tmp_path / "in"), str(archive)]) == 0
+    assert not archive.exists()

@@ -82,17 +82,11 @@ schema](./nextflow_schema.json) of this pipeline.
 This pipeline was used to generate [Mapant
 Germany](https://github.com/grst/mapant-germany). The pipeline was invoked for
 each federal state separately. As an example, Bavaria has an area of ca. 70,541
-km².
-
-<!-- TODO -->
-Downloading and processing the corresponding 71979 LIDAR tiles (ca. 15 TB) on a
-`c8id.32xlarge` AWS EC2 instance with 256GB or memory and 128 vCPU this
-completed in 27h wall time, consuming 5042 CPU hours. With on-demand pricing,
-this cost of the run was a little less than 200 USD.
-
-This corresponds to 0.07 CPUh or 0.0028 USD per tile.
-
-<!-- end TODO -->
+km². Downloading and processing the corresponding 71979 LIDAR tiles (ca. 15 TB)
+on a `c8id.8xlarge` AWS EC2 instance with 64GB or memory and 32 vCPU this
+completed in 34h wall time, consuming 1088 allocated CPU hours. With on-demand
+pricing, this cost of the run was about 60 USD. This corresponds to 0.0109 CPUh
+or 0.00083 USD per tile.
 
 This is a significant improvement over a previous version of the pipeline that
 used an older version of karttapullautin, which used 5042 CPU hours for Bavaria

@@ -57,6 +57,10 @@ import pyproj
 #: Drawn at every zoom of the pyramid.
 ALL_ZOOMS = -99
 
+#: tippecanoe's exit status when no feature survives `--clip-bounding-box` ("Did not read any valid
+#: geometries").
+TIPPECANOE_NO_DATA = 110
+
 #: Where every vegetation patch is shown, whatever its size (see SmallAreas).
 SMALL_AREAS_FROM = -1
 
@@ -497,9 +501,17 @@ def main(argv: list[str] | None = None) -> int:
 
     command = tippecanoe_command(tables, args.output, parent, args.max_zoom, args.buffer)
     print("  " + " ".join(command[:6]) + " ...", flush=True)
-    subprocess.run(command, check=True)
+    result = subprocess.run(command)
     for _, path, _ in tables:
         path.unlink()
+    if result.returncode == TIPPECANOE_NO_DATA:
+        # The tile->parent map errs large, so the tiles here may only touch this parent: nothing
+        # of them is left inside its bounds. No archive, like a parent with no vector files.
+        args.output.unlink(missing_ok=True)
+        print("nothing inside the parent's bounds; nothing to cut")
+        return 0
+    if result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command)
     return 0
 
 

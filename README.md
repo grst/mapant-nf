@@ -129,7 +129,7 @@ options listed in my [GitHub profile](https://github.com/grst).
 
 ## FAQ
 
-### karttapullautin can't output GeoJSON, what's going on here?
+### But karttapullautin can't output GeoJSON, what's going on here?
 
 As of 2026-10-06, the official version of kp indeed can't output GeoJSON.
 However, there has been work on this behind the scenes and the features will
